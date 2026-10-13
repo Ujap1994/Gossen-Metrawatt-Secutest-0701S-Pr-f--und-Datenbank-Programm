@@ -1,18 +1,27 @@
 name: Release
 
-# Bei jeder Änderung auf main: testen, portable Pakete bauen, auf allen
-# Betriebssystemen starten (Selbsttest) und als GitHub-Release veröffentlichen.
+# Bei jeder Änderung auf main: testen, Pakete für alle Plattformen bauen, auf echten
+# Systemen/Containern starten (Selbsttest) und als GitHub-Release veröffentlichen.
+# Pull Requests, die das Paketieren ändern, durchlaufen alles außer der Veröffentlichung.
 on:
   push:
     branches: [main]
+  pull_request:
+    paths:
+      - 'packaging/**'
+      - 'scripts/build-*.js'
+      - 'scripts/release-notes.js'
+      - '.github/workflows/release.yml'
+      - 'package.json'
+      - 'package-lock.json'
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: release
-  cancel-in-progress: false
+  group: ${{ github.event_name == 'pull_request' && format('release-pr-{0}', github.ref) || 'release' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -30,14 +39,95 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Pakete bauen (Windows, macOS, Linux inkl. Node.js)
+      - name: Portable Pakete (Windows x64/ARM64, macOS arm64/Intel/Universal, Linux x64/ARM64, Linux musl)
         run: node scripts/build-release.js
+      - name: nfpm installieren
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          echo "NFPM=$(go env GOPATH)/bin/nfpm" >> "$GITHUB_ENV"
+      - name: Linux-Pakete (deb, rpm, Arch, Alpine, AppImage)
+        run: node scripts/build-linux-packages.js
       - id: v
         run: echo "version=$(cat dist/release/VERSION.txt)" >> "$GITHUB_OUTPUT"
+      - name: Flatpak- und Snap-Quellen packen
+        run: |
+          tar -czf flatpak-src.tar.gz -C dist flatpak-src
+          tar -czf snap-src.tar.gz -C dist snap
       - uses: actions/upload-artifact@v4
         with:
           name: release
           path: dist/release/
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flatpak-src
+          path: flatpak-src.tar.gz
+          retention-days: 3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: snap-src
+          path: snap-src.tar.gz
+          retention-days: 3
+
+  flatpak:
+    name: Flatpak bauen & testen
+    needs: build
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: flatpak-src
+      - run: mkdir -p dist && tar -xzf flatpak-src.tar.gz -C dist
+      - name: flatpak-builder installieren
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq flatpak flatpak-builder
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+      - name: Bauen
+        run: |
+          flatpak-builder --user --install-deps-from=flathub --force-clean --repo=repo build-dir packaging/flatpak/io.github.pruefmanager.Secutest.yml
+          mkdir -p out
+          flatpak build-bundle repo "out/Secutest-Pruefmanager-${{ needs.build.outputs.version }}-x86_64.flatpak" io.github.pruefmanager.Secutest --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo
+      - name: Installieren & Selbsttest
+        run: |
+          flatpak install --user -y --noninteractive "out/Secutest-Pruefmanager-${{ needs.build.outputs.version }}-x86_64.flatpak"
+          flatpak run io.github.pruefmanager.Secutest --selftest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flatpak
+          path: out/*.flatpak
+          retention-days: 7
+
+  snap:
+    name: Snap bauen & testen
+    needs: build
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: snap-src
+      - run: tar -xzf snap-src.tar.gz
+      - uses: snapcore/action-build@v1
+        id: snapcraft
+        with:
+          path: snap
+      - name: Installieren & Selbsttest
+        env:
+          SNAPFILE: ${{ steps.snapcraft.outputs.snap }}
+        run: |
+          [ -f "$SNAPFILE" ] || SNAPFILE="snap/$SNAPFILE"
+          sudo snap install --dangerous --classic "$SNAPFILE"
+          /snap/bin/secutest-pruefmanager --selftest
+          mkdir -p out && cp "$SNAPFILE" out/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: snap
+          path: out/*.snap
           retention-days: 7
 
   smoke:
@@ -47,71 +137,144 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: windows-latest, target: windows-x64, ext: zip }
-          - { os: macos-latest, target: macos-arm64, ext: zip }
-          - { os: ubuntu-latest, target: linux-x64, ext: tar.gz }
+          - { os: windows-latest, target: windows-x64 }
+          - { os: macos-latest, target: macos-arm64 }
+          - { os: macos-latest, target: macos-universal }
+          - { os: ubuntu-latest, target: linux-x64 }
+          - { os: ubuntu-latest, target: appimage-x86_64 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: release
           path: release
-      - name: Entpacken (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: Expand-Archive -Path "release/Secutest-Pruefmanager-${{ needs.build.outputs.version }}-${{ matrix.target }}.zip" -DestinationPath bundle
-      - name: Entpacken (macOS)
-        if: runner.os == 'macOS'
-        run: mkdir bundle && unzip -q "release/Secutest-Pruefmanager-${{ needs.build.outputs.version }}-${{ matrix.target }}.zip" -d bundle
-      - name: Entpacken (Linux)
-        if: runner.os == 'Linux'
-        run: mkdir bundle && tar -xzf "release/Secutest-Pruefmanager-${{ needs.build.outputs.version }}-${{ matrix.target }}.tar.gz" -C bundle
-      - name: Selbsttest mit gebündeltem Node.js
+      - name: Selbsttest
         shell: bash
+        env:
+          V: ${{ needs.build.outputs.version }}
+          T: ${{ matrix.target }}
         run: |
-          cd "bundle/Secutest-Pruefmanager-${{ needs.build.outputs.version }}-${{ matrix.target }}"
-          if [ -f runtime/node.exe ]; then NODE=runtime/node.exe; else NODE=runtime/node; fi
-          cd app && "../$NODE" src/server.js --selftest
+          set -e
+          case "$T" in
+            windows-*)
+              pwsh -Command "Expand-Archive -Path release/Secutest-Pruefmanager-$V-$T.zip -DestinationPath bundle"
+              cd "bundle/Secutest-Pruefmanager-$V-$T/app" && ../runtime/node.exe src/server.js --selftest ;;
+            macos-*)
+              mkdir bundle && unzip -q "release/Secutest-Pruefmanager-$V-$T.zip" -d bundle
+              "bundle/Secutest-Pruefmanager-$V-$T/Secutest Pruefmanager.app/Contents/MacOS/secutest-pruefmanager" --selftest
+              "bundle/Secutest-Pruefmanager-$V-$T/Secutest-Pruefmanager.command" --selftest ;;
+            linux-*)
+              mkdir bundle && tar -xzf "release/Secutest-Pruefmanager-$V-$T.tar.gz" -C bundle
+              "bundle/Secutest-Pruefmanager-$V-$T/Secutest-Pruefmanager.sh" --selftest ;;
+            appimage-*)
+              chmod +x release/*-x86_64.AppImage
+              "release/Secutest-Pruefmanager-$V-x86_64.AppImage" --appimage-extract-and-run --selftest ;;
+          esac
 
-  publish:
-    needs: [build, smoke]
+  distros:
+    name: Installation ${{ matrix.name }}
+    needs: build
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Ubuntu 24.04, image: 'ubuntu:24.04', cmd: 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq /r/secutest-pruefmanager_*_amd64.deb' }
+          - { name: Ubuntu 22.04 (Mindestversion), image: 'ubuntu:22.04', cmd: 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq /r/secutest-pruefmanager_*_amd64.deb' }
+          - { name: Debian 12, image: 'debian:12', cmd: 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq /r/secutest-pruefmanager_*_amd64.deb' }
+          - { name: Fedora, image: 'fedora:latest', cmd: 'dnf install -y -q /r/secutest-pruefmanager-*.x86_64.rpm' }
+          - { name: Rocky Linux 9 (Mindestversion), image: 'rockylinux:9', cmd: 'dnf install -y -q /r/secutest-pruefmanager-*.x86_64.rpm' }
+          - { name: openSUSE Tumbleweed, image: 'opensuse/tumbleweed', cmd: 'zypper --non-interactive --no-gpg-checks install --allow-unsigned-rpm /r/secutest-pruefmanager-*.x86_64.rpm' }
+          - { name: Arch Linux, image: 'archlinux:latest', cmd: 'pacman -U --noconfirm /r/secutest-pruefmanager-*-x86_64.pkg.tar.zst' }
+          - { name: Alpine Linux, image: 'alpine:latest', cmd: 'apk add --no-cache --allow-untrusted /r/secutest-pruefmanager_*_x86_64.apk' }
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: release
           path: release
-      - name: Release-Notizen
+      - name: Installieren & Selbsttest
+        run: docker run --rm -v "$PWD/release:/r" "${{ matrix.image }}" sh -c "${{ matrix.cmd }} && secutest-pruefmanager --selftest && test -f /usr/share/applications/secutest-pruefmanager.desktop"
+
+  # Zusätzliche Tests auf ARM- und Intel-Hardware (blockieren das Release nicht)
+  smoke-extra:
+    name: Selbsttest ${{ matrix.target }} (zusätzlich)
+    needs: build
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04-arm, target: linux-arm64 }
+          - { os: windows-11-arm, target: windows-arm64 }
+          - { os: macos-15-intel, target: macos-x64 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: release
+      - name: Selbsttest
+        shell: bash
+        env:
+          V: ${{ needs.build.outputs.version }}
+          T: ${{ matrix.target }}
+        run: |
+          set -e
+          case "$T" in
+            windows-*)
+              pwsh -Command "Expand-Archive -Path release/Secutest-Pruefmanager-$V-$T.zip -DestinationPath bundle"
+              cd "bundle/Secutest-Pruefmanager-$V-$T/app" && ../runtime/node.exe src/server.js --selftest ;;
+            macos-*)
+              mkdir bundle && unzip -q "release/Secutest-Pruefmanager-$V-$T.zip" -d bundle
+              "bundle/Secutest-Pruefmanager-$V-$T/Secutest Pruefmanager.app/Contents/MacOS/secutest-pruefmanager" --selftest
+              mkdir uni && unzip -q "release/Secutest-Pruefmanager-$V-macos-universal.zip" -d uni
+              "uni/Secutest-Pruefmanager-$V-macos-universal/Secutest Pruefmanager.app/Contents/MacOS/secutest-pruefmanager" --selftest ;;
+            linux-*)
+              mkdir bundle && tar -xzf "release/Secutest-Pruefmanager-$V-$T.tar.gz" -C bundle
+              "bundle/Secutest-Pruefmanager-$V-$T/Secutest-Pruefmanager.sh" --selftest
+              docker run --rm -v "$PWD/release:/r" ubuntu:24.04 sh -c "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq /r/secutest-pruefmanager_*_arm64.deb && secutest-pruefmanager --selftest"
+              docker run --rm -v "$PWD/release:/r" alpine:latest sh -c "apk add --no-cache --allow-untrusted /r/secutest-pruefmanager_*_aarch64.apk && secutest-pruefmanager --selftest"
+              chmod +x release/*-aarch64.AppImage && release/Secutest-Pruefmanager-$V-aarch64.AppImage --appimage-extract-and-run --selftest ;;
+          esac
+
+  publish:
+    needs: [build, smoke, distros, flatpak, snap]
+    if: ${{ always() && github.event_name != 'pull_request' && needs.build.result == 'success' && needs.smoke.result == 'success' && needs.distros.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: release
+      - name: Flatpak übernehmen (falls gebaut)
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: flatpak
+          path: release
+      - name: Snap übernehmen (falls gebaut)
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: snap
+          path: release
+      - name: Prüfsummen & Release-Notizen
         env:
           VERSION: ${{ needs.build.outputs.version }}
-          COMMIT_MSG: ${{ github.event.head_commit.message }}
         run: |
-          cat > notes.md <<NOTES
-          ## Secutest Prüfmanager ${VERSION}
-
-          Automatisch erstellt aus Commit \`${GITHUB_SHA::7}\`.
-
-          ### Download – passendes Paket wählen, entpacken, starten
-          | System | Datei | Start |
-          |---|---|---|
-          | Windows 10/11 (64 Bit) | \`…-windows-x64.zip\` | \`Secutest-Pruefmanager.cmd\` doppelklicken |
-          | macOS Apple Silicon (M1–M4) | \`…-macos-arm64.zip\` | Rechtsklick → Öffnen auf \`Secutest-Pruefmanager.command\` |
-          | macOS Intel | \`…-macos-x64.zip\` | wie oben |
-          | Linux (x64) | \`…-linux-x64.tar.gz\` | \`./Secutest-Pruefmanager.sh\` |
-
-          Node.js ist enthalten – keine Installation nötig. Ohne Prüfgerät testen: \`Simulator-ohne-Hardware\` starten.
-          Prüfsummen: \`SHA256SUMS.txt\`.
-
-          ### Änderung
-          ${COMMIT_MSG}
-
-          > ⚠ **Haftungsausschluss:** Prüfungen und Arbeiten an elektrischen Geräten dürfen nur von Elektrofachkräften durchgeführt werden. Open-Source-Software ohne Gewähr – sie kann Fehler enthalten. Keine Haftung für Personen-, Sach- oder Vermögensschäden.
-          NOTES
+          cd release
+          for f in *.flatpak *.snap; do [ -f "$f" ] && sha256sum "$f" >> SHA256SUMS.txt; done || true
+          cd ..
+          node scripts/release-notes.js "$VERSION" release > notes.md
+          cat notes.md
       - name: GitHub-Release veröffentlichen
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
+          rm -f release/VERSION.txt
           gh release create "v${VERSION}" release/* \
             --repo "${{ github.repository }}" \
             --target "${{ github.sha }}" \

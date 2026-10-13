@@ -1,0 +1,34 @@
+# nfpm-Konfiguration für Alpine Linux (.apk, musl) – nutzt das Node.js der Distribution
+name: secutest-pruefmanager
+arch: ${NFPM_ARCH}
+platform: linux
+version: ${PKG_VERSION}
+release: ${PKG_RELEASE}
+version_schema: none
+maintainer: "Secutest Pruefmanager Contributors <noreply@localhost>"
+vendor: "Secutest Pruefmanager (Open Source)"
+license: MIT
+description: |
+  Prüf- und Datenbankprogramm für den Gossen Metrawatt SECUTEST 0701S
+  nach DIN VDE 0701/0702. Open-Source-Software ohne Gewähr –
+  Prüfungen nur durch Elektrofachkräfte.
+depends:
+  - nodejs
+contents:
+  - src: ${PKG_STAGE}/app/
+    dst: /opt/secutest-pruefmanager/app
+    type: tree
+  - src: ./packaging/linux/secutest-pruefmanager-system-node.sh
+    dst: /usr/bin/secutest-pruefmanager
+    file_info:
+      mode: 0755
+  - src: ./packaging/linux/secutest-pruefmanager.desktop
+    dst: /usr/share/applications/secutest-pruefmanager.desktop
+  - src: ./packaging/icons/icon.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/secutest-pruefmanager.svg
+  - src: ./packaging/icons/icon-256.png
+    dst: /usr/share/icons/hicolor/256x256/apps/secutest-pruefmanager.png
+  - src: ./LICENSE
+    dst: /usr/share/licenses/secutest-pruefmanager/LICENSE
+scripts:
+  postinstall: ./packaging/linux/postinstall.sh

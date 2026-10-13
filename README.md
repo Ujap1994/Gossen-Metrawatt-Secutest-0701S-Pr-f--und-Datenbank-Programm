@@ -56,7 +56,7 @@ Es geht auch **ganz ohne Prüfgerät**: Messwerte lassen sich von Hand eintragen
 | **Prüftermine** | Prüfdatum wird automatisch eingetragen und der nächste Termin aus dem Prüfintervall berechnet. Intervall pro Gerät änderbar |
 | **Erinnerungen** | E-Mail (SMTP) vor und bei Fälligkeit, **Kalendereinladung (.ics)** nach jeder Prüfung sowie Export aller Termine |
 | **Dokumentation** | Druckfertiges **Prüfprotokoll** (PDF über den Browser), **Prüfplaketten mit QR-Code**, Fotos und PDFs pro Gerät, Änderungsprotokoll, Export als CSV und JSON |
-| **Plattformen** | Windows, macOS (Apple Silicon und Intel), Linux. Fertige Pakete mit integriertem Node.js |
+| **Plattformen** | Windows (x64, ARM64), macOS (Universal, Apple Silicon, Intel), Linux als .deb, .rpm, Arch, Alpine (.apk), Snap, Flatpak, AppImage und tar.gz (x64, ARM64, auch musl). Mit integriertem Node.js (Alpine/musl: Node.js der Distribution) |
 
 <table>
 <tr>
@@ -79,30 +79,65 @@ Es geht auch **ganz ohne Prüfgerät**: Messwerte lassen sich von Hand eintragen
 
 ### Fertige Pakete (empfohlen)
 
-Bei jeder Änderung baut GitHub automatisch ein neues Release. Unter **[Releases → neueste Version](../../releases/latest)** lädst du das passende Paket herunter:
+Bei jeder Änderung baut und testet GitHub automatisch ein neues Release. Unter **[Releases → neueste Version](../../releases/latest)** lädst du das passende Paket herunter. Node.js ist überall **enthalten**, du musst nichts weiter installieren.
 
-| System | Datei | Start |
+| System | Datei | Installation / Start |
 |---|---|---|
-| Windows 10/11 (64 Bit) | `Secutest-Pruefmanager-…-windows-x64.zip` | Entpacken, dann **`Secutest-Pruefmanager.cmd`** doppelklicken |
-| macOS Apple Silicon (M1–M4) | `…-macos-arm64.zip` | Entpacken, dann Rechtsklick auf **`Secutest-Pruefmanager.command`** → *Öffnen* |
-| macOS Intel | `…-macos-x64.zip` | wie oben |
-| Linux x64 | `…-linux-x64.tar.gz` | `tar xzf …` und `./Secutest-Pruefmanager.sh` |
+| **Windows 10/11** (x64) | `…-windows-x64.zip` | Entpacken, dann **`Secutest-Pruefmanager.cmd`** doppelklicken |
+| **Windows 11 ARM64** (Snapdragon, Surface) | `…-windows-arm64.zip` | wie oben |
+| **macOS Universal** (Apple Silicon + Intel) | `…-macos-universal.zip` | Entpacken, dann **„Secutest Pruefmanager.app“** öffnen (beim ersten Mal Rechtsklick → *Öffnen*) |
+| macOS nur Apple Silicon / nur Intel | `…-macos-arm64.zip` / `…-macos-x64.zip` | wie oben, kleinerer Download |
+| **Ubuntu, Linux Mint, Debian, Pop!_OS** | `secutest-pruefmanager_…_amd64.deb` | `sudo apt install ./secutest-pruefmanager_…_amd64.deb` |
+| **Raspberry Pi OS / Ubuntu ARM64** | `…_arm64.deb` | `sudo apt install ./…_arm64.deb` |
+| **Fedora, openSUSE, RHEL/Alma/Rocky** | `secutest-pruefmanager-….x86_64.rpm` (ARM: `….aarch64.rpm`) | `sudo dnf install ./….rpm` bzw. `sudo zypper install --allow-unsigned-rpm ./….rpm` |
+| **Arch, Manjaro, EndeavourOS** | `secutest-pruefmanager-…-x86_64.pkg.tar.zst` (ARM: `…-aarch64…`) | `sudo pacman -U secutest-pruefmanager-…pkg.tar.zst` |
+| **Alpine Linux, postmarketOS** | `secutest-pruefmanager_…_x86_64.apk` (ARM: `…_aarch64.apk`) | `sudo apk add --allow-untrusted ./….apk` (installiert `nodejs` automatisch mit) |
+| **Snap** (Ubuntu und jede Distribution mit snapd) | `secutest-pruefmanager_…_amd64.snap` | `sudo snap install --dangerous --classic ./….snap` |
+| **Flatpak** (jede Distribution) | `…-x86_64.flatpak` | `flatpak install --user ./…flatpak`, Start über das Menü oder `flatpak run io.github.pruefmanager.Secutest` |
+| **AppImage** (jede Distribution) | `…-x86_64.AppImage` / `…-aarch64.AppImage` | `chmod +x ….AppImage` und doppelklicken |
+| Linux portabel | `…-linux-x64.tar.gz` / `…-linux-arm64.tar.gz` | `tar xzf …` und `./Secutest-Pruefmanager.sh` |
+| Linux portabel, musl (Void-musl, Chimera …) | `…-linux-musl-x64.tar.gz` / `…-linux-musl-arm64.tar.gz` | Node.js ≥ 20 installieren, dann `./Secutest-Pruefmanager.sh` |
 
-* Node.js ist **enthalten**, du musst nichts installieren.
 * Der Browser öffnet sich automatisch unter **http://127.0.0.1:3701**. Das Programm ist nur auf deinem Rechner erreichbar.
-* **Ohne Prüfgerät ausprobieren:** `Simulator-ohne-Hardware` starten.
+* **Ohne Prüfgerät ausprobieren:** `Simulator-ohne-Hardware` starten, im Linux-Menü „Mit Simulator starten“ wählen oder `secutest-pruefmanager --simulator` aufrufen.
 * **Beenden:** in der Oberfläche **⏻ Programm beenden** (Seitenleiste bzw. Anmeldeseite) oder Strg+C im Terminal. Ein zweiter Start öffnet einfach das bereits laufende Programm im Browser.
-* **Update:** neues Paket entpacken. Deine Datenbanken liegen nicht im Programmordner und bleiben erhalten.
-* Prüfsummen der Pakete stehen in `SHA256SUMS.txt`.
+* **Linux-Pakete** installieren nach `/opt/secutest-pruefmanager`, legen einen Startmenü-Eintrag mit Icon an und stellen den Befehl `secutest-pruefmanager` bereit. Updates einfach über das neue Paket installieren.
+* **Update (zip/tar.gz):** neues Paket entpacken. Deine Datenbanken liegen nicht im Programmordner und bleiben erhalten.
+* Prüfsummen aller Dateien stehen in `SHA256SUMS.txt`. Was sich geändert hat, steht im **[Änderungsprotokoll](CHANGELOG.md)**.
 
 <details>
-<summary><b>Hinweise zu Windows SmartScreen / macOS Gatekeeper</b></summary>
+<summary><b>Hinweise zu Windows SmartScreen / macOS Gatekeeper / Linux-Rechten</b></summary>
 
 * **Windows:** Bei „Der Computer wurde durch Windows geschützt“ klickst du auf *Weitere Informationen* → *Trotzdem ausführen*. Fragt die Firewall nach, genügt *Abbrechen*, denn der Server lauscht nur auf 127.0.0.1.
-* **macOS:** Beim ersten Start Rechtsklick → *Öffnen*. Blockiert macOS weiterhin, einmalig im Terminal ausführen:
+* **macOS:** Die App ist nicht von Apple signiert. Beim ersten Start: Rechtsklick → *Öffnen*, oder *Systemeinstellungen → Datenschutz & Sicherheit → Trotzdem öffnen*. Blockiert macOS weiterhin, einmalig im Terminal ausführen:
   `xattr -dr com.apple.quarantine ~/Downloads/Secutest-Pruefmanager-…`
-* **Linux:** Für die serielle Schnittstelle muss dein Benutzer in der Gruppe `dialout` sein: `sudo usermod -aG dialout $USER`, danach neu anmelden.
+  Die App läuft im Hintergrund, ohne Dock-Symbol, und wird über „Programm beenden“ geschlossen. `Secutest-Pruefmanager.command` startet sie stattdessen mit einem Terminalfenster samt Protokollausgabe.
+* **Linux:** Für den USB-RS232-Adapter muss dein Benutzer in der Gruppe `dialout` sein (Debian, Ubuntu, Mint, Fedora, openSUSE) bzw. in `uucp` (Arch, Manjaro): `sudo usermod -aG dialout $USER` (Alpine: `sudo addgroup $USER dialout`), danach ab- und wieder anmelden. Das Flatpak hat Zugriff auf serielle Geräte und den Benutzerordner (OneDrive/Dokumente).
 </details>
+
+### Unterstützte Linux-Distributionen
+
+Voraussetzung ist **glibc ≥ 2.34** und **libstdc++ aus GCC ≥ 11**; das braucht das mitgelieferte SQLCipher-Modul. Bei älteren Systemen verweigern `.deb` und `.rpm` die Installation mit einem klaren Hinweis. Dort hilft das **Flatpak**, denn es bringt seine eigenen Bibliotheken mit. Für musl-Systeme (Alpine, Void-musl) gibt es eigene Pakete, die das Node.js der Distribution verwenden.
+
+| Distribution | Mindestversion | Paket | getestet |
+|---|---|---|---|
+| Ubuntu (inkl. Kubuntu, Xubuntu …) | **22.04 LTS** | `.deb` | ✅ 22.04, 24.04 |
+| Linux Mint | **21** | `.deb` | (basiert auf Ubuntu 22.04/24.04) |
+| Debian | **12 „Bookworm“** | `.deb` | ✅ 12 (11 ❌ zu alt → Flatpak) |
+| Pop!_OS, elementary OS, Zorin OS, KDE neon | 22.04-Basis (Pop!_OS 22.04, elementary 7, Zorin 17) | `.deb` | – |
+| Raspberry Pi OS **64-Bit** | **12 „Bookworm“** | `_arm64.deb` | ✅ ARM64-CI (Ubuntu) |
+| Fedora (Workstation, KDE, Silverblue → Flatpak) | **35** | `.rpm` | ✅ aktuelle Version |
+| RHEL, AlmaLinux, Rocky Linux, CentOS Stream | **9** | `.rpm` | ✅ Rocky 9 (8 ❌ zu alt → Flatpak) |
+| openSUSE | **Tumbleweed**, Leap **16** | `.rpm` | ✅ Tumbleweed (Leap 15 → Flatpak) |
+| Arch Linux, Manjaro, EndeavourOS, Garuda | rollierend | `.pkg.tar.zst` | ✅ aktuell |
+| Alpine Linux, postmarketOS | Alpine **3.19** (Node.js ≥ 20) | `.apk` | ✅ aktuell (x64, ARM64) |
+| Ubuntu Core / Distributionen mit snapd | snapd installiert | `.snap` | Snap-CI |
+| Andere glibc-Distributionen (Gentoo, Solus, Void-glibc, Slackware 15+) | glibc ≥ 2.34 | `.AppImage` / `.tar.gz` | – |
+| Void-musl, Chimera und andere musl-Systeme | Node.js ≥ 20 | `linux-musl-….tar.gz` | ✅ musl-Tarball (Alpine-Container) |
+| Ältere Systeme, NixOS, unveränderliche Systeme (Silverblue, SteamOS) | Flatpak installiert | `.flatpak` | Flatpak-CI |
+| ChromeOS (Linux-Umgebung) | Debian 12 | `.deb` | – |
+
+Nicht unterstützt: 32-Bit-Systeme (i386, armhf/armv7, also auch das 32-Bit-Raspberry-Pi-OS).
 
 ### Aus dem Quellcode
 
@@ -345,15 +380,18 @@ src/
   routes/              REST-API
 public/                Oberfläche (HTML/CSS/JavaScript-Module, ohne Build-Schritt)
   js/illustrations.js  SVG-Grafiken der Prüfschritte
-scripts/               build-release.js (portable Pakete), send-reminders.js
+scripts/               build-release.js (portable Pakete), build-linux-packages.js (deb/rpm/Arch/Alpine/AppImage/Snap),
+                       release-notes.js, send-reminders.js
+packaging/             Icons, Linux-Desktop-Eintrag, nfpm-Konfigurationen (glibc + Alpine), Flatpak-Manifest
 test/                  Tests (node:test) – Protokoll, TOTP, Grenzwerte, DB, Simulator, API
 ```
 
 * **Technik:** Node.js (JavaScript, kein Build-Schritt), Express, better-sqlite3-multiple-ciphers (SQLCipher), serialport, nodemailer, qrcode.
 * **Tests:** `npm test` (über 30 Tests). `npm run simulator` startet das Programm mit simuliertem SECUTEST und mehreren Szenarien, auch mit Fehlerfällen.
 * **CI:** Jeder Pull Request wird unter Windows, macOS und Linux getestet (`.github/workflows/ci.yml`).
-* **Releases:** Jeder Push bzw. Merge auf `main` löst `.github/workflows/release.yml` aus: Tests → Pakete für Windows, macOS (arm64/x64) und Linux mit gebündeltem Node.js bauen → **Selbsttest der Pakete** auf Windows, macOS und Linux → Veröffentlichung als GitHub-Release `v<Version>-build.<Nr>`. So liegt immer die neueste ausführbare Version unter *Releases*.
-* Pakete lokal bauen: `node scripts/build-release.js` (alle Plattformen) oder `node scripts/build-release.js --only linux-x64 --local-node`.
+* **Releases:** Jeder Push bzw. Merge auf `main` löst `.github/workflows/release.yml` aus. Ablauf: Tests → portable Pakete für alle Plattformen bauen (`scripts/build-release.js`) → Linux-Pakete bauen (`scripts/build-linux-packages.js` mit [nfpm](https://nfpm.goreleaser.com) und appimagetool, Flatpak mit flatpak-builder, Snap mit snapcraft) → **Selbsttests** auf Windows, macOS und Linux, Installation in Ubuntu-, Debian-, Fedora-, Rocky-, openSUSE-, Arch- und Alpine-Containern, zusätzlich auf ARM64 und Intel-Mac → Veröffentlichung als GitHub-Release `v<Version>-build.<Nr>`. Die Release-Notizen kommen samt Bildern aus dem obersten Abschnitt von [`CHANGELOG.md`](CHANGELOG.md) (`scripts/release-notes.js`). Pull Requests, die das Paketieren ändern, durchlaufen dieselbe Kette ohne Veröffentlichung.
+* Pakete lokal bauen: `node scripts/build-release.js` (alle Plattformen) bzw. `--only linux-x64 --local-node`, danach `NFPM=/pfad/zu/nfpm node scripts/build-linux-packages.js`.
+* **Bei jeder Änderung:** einen Abschnitt in `CHANGELOG.md` mit Beschreibung und Screenshots (`docs/images/`) ergänzen und die Version in `package.json` anheben.
 
 Beiträge sind willkommen. Bitte vor einem Pull Request `npm test` ausführen.
 

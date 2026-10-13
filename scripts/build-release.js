@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * Baut portable, sofort startbare Pakete (inkl. Node.js-Laufzeit) für
- *   Windows x64, macOS Apple Silicon (arm64), macOS Intel (x64), Linux x64
+ * Baut portable, sofort startbare Pakete (inkl. Node.js-Laufzeit):
+ *   Windows x64 / ARM64, macOS Apple Silicon / Intel / Universal (.app), Linux x64 / ARM64
  *
  *   node scripts/build-release.js                 → alle Plattformen (lädt Node.js von nodejs.org)
  *   node scripts/build-release.js --only linux-x64 --local-node   → nur aktuelle Plattform, ohne Download
@@ -10,6 +10,7 @@
  * Die nativen Module (SQLCipher, serialport) bringen vorkompilierte Binärdateien für alle
  * Plattformen mit – daher kann alles auf einem Linux-Rechner (GitHub Actions) gebaut werden.
  * Ergebnis: dist/release/*.zip|*.tar.gz + SHA256SUMS.txt
+ * Linux-Distributionspakete (deb/rpm/Arch/AppImage) baut danach scripts/build-linux-packages.js.
  */
 const fs = require('fs');
 const path = require('path');
@@ -21,11 +22,21 @@ const DIST = path.join(ROOT, 'dist');
 const OUT = path.join(DIST, 'release');
 const pkg = require('../package.json');
 
+const APP_NAME = 'Secutest Prüfmanager';
+const APP_BUNDLE = 'Secutest Pruefmanager.app'; // ASCII-Ordnername (sicher in ZIP-Dateien), Anzeigename kommt aus Info.plist
+const BUNDLE_ID = 'io.github.pruefmanager.Secutest';
+
 const TARGETS = {
-  'windows-x64': { node: 'win-x64', archive: 'zip', platform: 'win32', arch: 'x64' },
-  'macos-arm64': { node: 'darwin-arm64', archive: 'zip', platform: 'darwin', arch: 'arm64' },
-  'macos-x64': { node: 'darwin-x64', archive: 'zip', platform: 'darwin', arch: 'x64' },
-  'linux-x64': { node: 'linux-x64', archive: 'tar.gz', platform: 'linux', arch: 'x64' },
+  'windows-x64': { nodes: ['win-x64'], archive: 'zip', platform: 'win32', archs: ['x64'] },
+  'windows-arm64': { nodes: ['win-arm64'], archive: 'zip', platform: 'win32', archs: ['arm64'] },
+  'macos-arm64': { nodes: ['darwin-arm64'], archive: 'zip', platform: 'darwin', archs: ['arm64'] },
+  'macos-x64': { nodes: ['darwin-x64'], archive: 'zip', platform: 'darwin', archs: ['x64'] },
+  'macos-universal': { nodes: ['darwin-arm64', 'darwin-x64'], archive: 'zip', platform: 'darwin', archs: ['arm64', 'x64'] },
+  'linux-x64': { nodes: ['linux-x64'], archive: 'tar.gz', platform: 'linux', archs: ['x64'] },
+  'linux-arm64': { nodes: ['linux-arm64'], archive: 'tar.gz', platform: 'linux', archs: ['arm64'] },
+  // musl (Alpine, postmarketOS, Void-musl): ohne gebündeltes Node.js – nutzt das Node.js der Distribution
+  'linux-musl-x64': { nodes: [], archive: 'tar.gz', platform: 'linux', archs: ['x64'], musl: true },
+  'linux-musl-arm64': { nodes: [], archive: 'tar.gz', platform: 'linux', archs: ['arm64'], musl: true },
 };
 
 const args = process.argv.slice(2);
@@ -45,6 +56,12 @@ function copy(src, dst) {
   fs.cpSync(src, dst, { recursive: true, filter: (s) => !/node_modules[\\/]\.cache|\.DS_Store$/.test(s) });
 }
 
+function write(file, content, mode) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, content);
+  if (mode) fs.chmodSync(file, mode);
+}
+
 async function fetchBuffer(url) {
   const r = await fetch(url);
   if (!r.ok) throw new Error(`Download fehlgeschlagen (${r.status}): ${url}`);
@@ -59,27 +76,26 @@ async function resolveNodeVersion() {
   return rel.version;
 }
 
-/** Lädt die Node.js-Binärdatei für ein Ziel und legt sie nach runtime/ */
-async function fetchNode(nodeVersion, target, destDir) {
-  const t = TARGETS[target];
+let shasums = null;
+/** Lädt die Node.js-Binärdatei (mit SHA-256-Prüfung) und kopiert sie nach destDir */
+async function fetchNode(nodeVersion, nodeTarget, destDir) {
   fs.mkdirSync(destDir, { recursive: true });
   const cache = path.join(DIST, 'cache');
   fs.mkdirSync(cache, { recursive: true });
-  const base = `node-${nodeVersion}-${t.node}`;
-  const file = t.node.startsWith('win') ? `${base}.zip` : t.node.startsWith('linux') ? `${base}.tar.xz` : `${base}.tar.gz`;
-  const url = `https://nodejs.org/dist/${nodeVersion}/${file}`;
+  const base = `node-${nodeVersion}-${nodeTarget}`;
+  const file = nodeTarget.startsWith('win') ? `${base}.zip` : nodeTarget.startsWith('linux') ? `${base}.tar.xz` : `${base}.tar.gz`;
   const local = path.join(cache, file);
   if (!fs.existsSync(local)) {
+    const url = `https://nodejs.org/dist/${nodeVersion}/${file}`;
     console.log(`  ↓ ${url}`);
     const buf = await fetchBuffer(url);
-    // Prüfsumme gegen SHASUMS256.txt von nodejs.org
-    const sums = (await fetchBuffer(`https://nodejs.org/dist/${nodeVersion}/SHASUMS256.txt`)).toString();
-    const expected = sums.split('\n').find((l) => l.endsWith(`  ${file}`))?.split(/\s+/)[0];
+    shasums ||= (await fetchBuffer(`https://nodejs.org/dist/${nodeVersion}/SHASUMS256.txt`)).toString();
+    const expected = shasums.split('\n').find((l) => l.endsWith(`  ${file}`))?.split(/\s+/)[0];
     const actual = crypto.createHash('sha256').update(buf).digest('hex');
     if (!expected || expected !== actual) throw new Error(`SHA-256 von ${file} stimmt nicht!`);
     fs.writeFileSync(local, buf);
   }
-  const tmp = path.join(cache, `x-${target}`);
+  const tmp = path.join(cache, `x-${nodeTarget}`);
   rm(tmp);
   fs.mkdirSync(tmp, { recursive: true });
   if (file.endsWith('.zip')) sh('unzip', ['-q', local, `${base}/node.exe`, `${base}/LICENSE`, '-d', tmp]);
@@ -93,36 +109,111 @@ async function fetchNode(nodeVersion, target, destDir) {
 
 /** Native Binärdateien anderer Plattformen entfernen (kleinere Downloads) */
 function prunePrebuilds(appDir, t) {
+  // SQLCipher: <platform>-<arch>.node bzw. linuxmusl-<arch>.node
+  const sqPrefix = t.musl ? 'linuxmusl-' : `${t.platform}-`;
+  const keepSq = (f) => t.archs.some((a) => f.startsWith(`${sqPrefix}${a}`));
+  // serialport: Ordner <platform>-<arch> (enthält glibc- und musl-Variante), macOS: darwin-x64+arm64
+  const keepSp = (d) => t.archs.some((a) => d.startsWith(`${t.platform}-`) && d.includes(a));
   const sq = path.join(appDir, 'node_modules', 'better-sqlite3-multiple-ciphers', 'prebuilds');
-  if (fs.existsSync(sq)) for (const f of fs.readdirSync(sq)) if (!f.startsWith(`${t.platform}-${t.arch}.`)) rm(path.join(sq, f));
+  if (fs.existsSync(sq)) for (const f of fs.readdirSync(sq)) if (!keepSq(f)) rm(path.join(sq, f));
   const sp = path.join(appDir, 'node_modules', '@serialport', 'bindings-cpp', 'prebuilds');
-  if (fs.existsSync(sp)) for (const d of fs.readdirSync(sp)) if (!(d.startsWith(`${t.platform}-`) && d.includes(t.arch))) rm(path.join(sp, d));
+  if (fs.existsSync(sp)) {
+    for (const d of fs.readdirSync(sp)) {
+      if (!keepSp(d)) rm(path.join(sp, d));
+      else if (t.platform === 'linux') for (const f of fs.readdirSync(path.join(sp, d))) if (f.includes(t.musl ? '.glibc.' : '.musl.')) rm(path.join(sp, d, f));
+    }
+  }
 }
 
-function writeLaunchers(dir, target) {
+/** Apple-Icon (.icns) aus PNG-Dateien zusammensetzen (PNG-Einträge ic07–ic10) */
+function makeIcns() {
+  const parts = [
+    ['ic07', 128],
+    ['ic08', 256],
+    ['ic09', 512],
+    ['ic10', 1024],
+  ].map(([type, size]) => {
+    const data = fs.readFileSync(path.join(ROOT, 'packaging', 'icons', `icon-${size}.png`));
+    const head = Buffer.alloc(8);
+    head.write(type, 0, 'ascii');
+    head.writeUInt32BE(data.length + 8, 4);
+    return Buffer.concat([head, data]);
+  });
+  const body = Buffer.concat(parts);
+  const head = Buffer.alloc(8);
+  head.write('icns', 0, 'ascii');
+  head.writeUInt32BE(body.length + 8, 4);
+  return Buffer.concat([head, body]);
+}
+
+function infoPlist() {
+  const v = pkg.version;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>${APP_NAME}</string>
+  <key>CFBundleDisplayName</key><string>${APP_NAME}</string>
+  <key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string>
+  <key>CFBundleVersion</key><string>${buildNo === 'local' ? v : buildNo}</string>
+  <key>CFBundleShortVersionString</key><string>${v}</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleExecutable</key><string>secutest-pruefmanager</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>LSMinimumSystemVersion</key><string>11.0</string>
+  <key>LSUIElement</key><true/>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSHumanReadableCopyright</key><string>MIT-Lizenz · Open Source ohne Gewähr</string>
+</dict>
+</plist>
+`;
+}
+
+/** Shell-Schnipsel: passende Node.js-Laufzeit wählen (Universal: Apple Silicon oder Intel) */
+const MAC_NODE_SELECT = `if [ -x "$RES/runtime/node" ]; then
+  NODE="$RES/runtime/node"
+elif [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
+  NODE="$RES/runtime/darwin-arm64/node"
+else
+  NODE="$RES/runtime/darwin-x64/node"
+fi`;
+
+function writeLaunchers(dir, target, contentDir) {
   const t = TARGETS[target];
   if (t.platform === 'win32') {
     const cmd = (extra) => `@echo off\r\nchcp 65001 >nul\r\ntitle Secutest Pruefmanager\r\ncd /d "%~dp0app"\r\n"%~dp0runtime\\node.exe" src\\server.js ${extra}%*\r\nif errorlevel 1 pause\r\n`;
-    fs.writeFileSync(path.join(dir, 'Secutest-Pruefmanager.cmd'), cmd(''));
-    fs.writeFileSync(path.join(dir, 'Simulator-ohne-Hardware.cmd'), cmd('--simulator '));
-    fs.writeFileSync(path.join(dir, 'Erinnerungen-senden.cmd'), `@echo off\r\ncd /d "%~dp0app"\r\n"%~dp0runtime\\node.exe" scripts\\send-reminders.js %*\r\npause\r\n`);
+    write(path.join(dir, 'Secutest-Pruefmanager.cmd'), cmd(''));
+    write(path.join(dir, 'Simulator-ohne-Hardware.cmd'), cmd('--simulator '));
+    write(path.join(dir, 'Erinnerungen-senden.cmd'), `@echo off\r\ncd /d "%~dp0app"\r\n"%~dp0runtime\\node.exe" scripts\\send-reminders.js %*\r\npause\r\n`);
+  } else if (t.platform === 'darwin') {
+    // .app-Bundle (Doppelklick, ohne Terminal) …
+    const appExe = path.join(contentDir, '..', 'MacOS', 'secutest-pruefmanager');
+    write(appExe, `#!/bin/sh\n# ${APP_NAME} – startet den lokalen Server und öffnet den Browser\nRES="$(cd "$(dirname "$0")/../Resources" && pwd)"\n${MAC_NODE_SELECT}\nexec "$NODE" "$RES/app/src/server.js" "$@"\n`, 0o755);
+    write(path.join(contentDir, '..', 'Info.plist'), infoPlist());
+    write(path.join(contentDir, 'AppIcon.icns'), makeIcns());
+    // … und .command-Dateien (mit Terminalfenster und Log-Ausgabe)
+    const script = (entry, extra) => `#!/bin/sh\n# ${APP_NAME}\nDIR="$(cd "$(dirname "$0")" && pwd)"\nRES="$DIR/${APP_BUNDLE}/Contents/Resources"\n${MAC_NODE_SELECT}\ncd "$RES/app" || exit 1\nexec "$NODE" ${entry} ${extra}"$@"\n`;
+    write(path.join(dir, 'Secutest-Pruefmanager.command'), script('src/server.js', ''), 0o755);
+    write(path.join(dir, 'Simulator-ohne-Hardware.command'), script('src/server.js', '--simulator '), 0o755);
+    write(path.join(dir, 'Erinnerungen-senden.command'), script('scripts/send-reminders.js', ''), 0o755);
   } else {
-    const ext = t.platform === 'darwin' ? '.command' : '.sh';
-    const script = (extra) => `#!/bin/sh\n# Secutest Prüfmanager starten\nDIR="$(cd "$(dirname "$0")" && pwd)"\ncd "$DIR/app" || exit 1\nexec "$DIR/runtime/node" src/server.js ${extra}"$@"\n`;
-    const files = { [`Secutest-Pruefmanager${ext}`]: script(''), [`Simulator-ohne-Hardware${ext}`]: script('--simulator '), [`Erinnerungen-senden${ext}`]: `#!/bin/sh\nDIR="$(cd "$(dirname "$0")" && pwd)"\ncd "$DIR/app" || exit 1\nexec "$DIR/runtime/node" scripts/send-reminders.js "$@"\n` };
-    for (const [name, content] of Object.entries(files)) {
-      fs.writeFileSync(path.join(dir, name), content);
-      fs.chmodSync(path.join(dir, name), 0o755);
-    }
+    const node = t.musl ? 'node' : '"$DIR/runtime/node"';
+    const script = (entry, extra) => `#!/bin/sh\n# ${APP_NAME} starten\nDIR="$(cd "$(dirname "$0")" && pwd)"\ncd "$DIR/app" || exit 1\nexec ${node} ${entry} ${extra}"$@"\n`;
+    write(path.join(dir, 'Secutest-Pruefmanager.sh'), script('src/server.js', ''), 0o755);
+    write(path.join(dir, 'Simulator-ohne-Hardware.sh'), script('src/server.js', '--simulator '), 0o755);
+    write(path.join(dir, 'Erinnerungen-senden.sh'), script('scripts/send-reminders.js', ''), 0o755);
   }
   const hints = {
-    win32: 'Doppelklick auf „Secutest-Pruefmanager.cmd“. Beim ersten Start fragt die Windows-Firewall evtl. nach – „Abbrechen“ genügt, das Programm ist nur lokal (127.0.0.1) erreichbar. SmartScreen: „Weitere Informationen“ → „Trotzdem ausführen“.',
-    darwin: 'Rechtsklick auf „Secutest-Pruefmanager.command“ → „Öffnen“ (beim ersten Mal wegen Gatekeeper). Falls macOS den Start blockiert, im Terminal einmalig ausführen:\n    xattr -dr com.apple.quarantine <Pfad zu diesem Ordner>',
-    linux: 'Im Terminal: ./Secutest-Pruefmanager.sh  – für die serielle Schnittstelle muss der Benutzer in der Gruppe „dialout“ sein (sudo usermod -aG dialout $USER, danach neu anmelden).',
+    win32:
+      'Doppelklick auf „Secutest-Pruefmanager.cmd“. SmartScreen: „Weitere Informationen“ → „Trotzdem ausführen“. Fragt die Windows-Firewall nach, genügt „Abbrechen“ – das Programm ist nur lokal (127.0.0.1) erreichbar.',
+    darwin:
+      'Doppelklick auf „Secutest Pruefmanager.app“ (läuft im Hintergrund, Beenden über „Programm beenden“ in der Oberfläche) oder „Secutest-Pruefmanager.command“ (mit Terminalfenster).\r\n  Beim ersten Start: Rechtsklick → „Öffnen“ bzw. Systemeinstellungen → Datenschutz & Sicherheit → „Trotzdem öffnen“.\r\n  Falls macOS den Start weiterhin blockiert, einmalig im Terminal:  xattr -dr com.apple.quarantine <Pfad zu diesem Ordner>',
+    linux: 'Im Terminal: ./Secutest-Pruefmanager.sh  – für die serielle Schnittstelle muss der Benutzer in der Gruppe „dialout“ (Arch: „uucp“) sein: sudo usermod -aG dialout $USER, danach neu anmelden.',
   };
-  fs.writeFileSync(
+  if (t.musl) hints.linux = 'musl-Variante (Alpine, postmarketOS, Void-musl) – benötigt Node.js ≥ 20 der Distribution (Alpine: apk add nodejs). Start: ./Secutest-Pruefmanager.sh  – serielle Schnittstelle: Benutzer in Gruppe „dialout“.';
+  write(
     path.join(dir, 'LIESMICH.txt'),
-    `Secutest Prüfmanager ${version} – ${target}\r\n\r\nSTART\r\n  ${hints[t.platform]}\r\n\r\nDer Browser öffnet sich automatisch mit http://127.0.0.1:3701\r\nOhne Prüfgerät ausprobieren: „Simulator-ohne-Hardware“ starten.\r\n\r\nUPDATE\r\n  Neue Version herunterladen und entpacken. Deine Datenbanken liegen NICHT in diesem\r\n  Ordner (sondern in OneDrive/iCloud/Dokumente) und bleiben erhalten.\r\n\r\n⚠ HAFTUNGSAUSSCHLUSS\r\n  Prüfungen und Arbeiten an elektrischen Geräten nur durch Elektrofachkräfte.\r\n  Open-Source-Software ohne Gewähr, kann Fehler enthalten. Keine Haftung für\r\n  Personen-, Sach- oder Vermögensschäden. Details: app/README.md und app/LICENSE.\r\n`
+    `${APP_NAME} ${version} – ${target}\r\n\r\nSTART\r\n  ${hints[t.platform]}\r\n\r\nDer Browser öffnet sich automatisch mit http://127.0.0.1:3701\r\nOhne Prüfgerät ausprobieren: „Simulator-ohne-Hardware“ starten.\r\nBeenden: „Programm beenden“ in der Oberfläche oder Strg+C im Terminal.\r\n\r\nUPDATE\r\n  Neue Version herunterladen und entpacken. Deine Datenbanken liegen NICHT in diesem\r\n  Ordner (sondern in OneDrive/iCloud/Dokumente) und bleiben erhalten.\r\n\r\n⚠ HAFTUNGSAUSSCHLUSS\r\n  Prüfungen und Arbeiten an elektrischen Geräten nur durch Elektrofachkräfte.\r\n  Open-Source-Software ohne Gewähr, kann Fehler enthalten. Keine Haftung für\r\n  Personen-, Sach- oder Vermögensschäden. Details: README.md und LICENSE.\r\n`
   );
 }
 
@@ -133,7 +224,7 @@ async function main() {
   const stage = path.join(DIST, 'stage');
   rm(stage);
   fs.mkdirSync(stage, { recursive: true });
-  for (const f of ['src', 'public', 'scripts', 'package.json', 'package-lock.json', 'README.md', 'LICENSE']) {
+  for (const f of ['src', 'public', 'scripts', 'package.json', 'package-lock.json', '.npmrc', 'README.md', 'LICENSE']) {
     if (fs.existsSync(path.join(ROOT, f))) copy(path.join(ROOT, f), path.join(stage, f));
   }
   if (fs.existsSync(path.join(ROOT, 'docs'))) copy(path.join(ROOT, 'docs'), path.join(stage, 'docs'));
@@ -150,13 +241,24 @@ async function main() {
     const dir = path.join(DIST, name);
     console.log(`• ${name}`);
     rm(dir);
-    copy(stage, path.join(dir, 'app'));
-    prunePrebuilds(path.join(dir, 'app'), t);
-    if (localNode) {
-      fs.mkdirSync(path.join(dir, 'runtime'), { recursive: true });
-      fs.copyFileSync(process.execPath, path.join(dir, 'runtime', path.basename(process.execPath)));
-    } else await fetchNode(nodeVersion, target, path.join(dir, 'runtime'));
-    writeLaunchers(dir, target);
+    // macOS: alles liegt im .app-Bundle (Contents/Resources), sonst direkt im Ordner
+    const contentDir = t.platform === 'darwin' ? path.join(dir, APP_BUNDLE, 'Contents', 'Resources') : dir;
+    copy(stage, path.join(contentDir, 'app'));
+    prunePrebuilds(path.join(contentDir, 'app'), t);
+    if (t.nodes.length === 0) {
+      // musl: Node.js der Distribution
+    } else if (localNode) {
+      fs.mkdirSync(path.join(contentDir, 'runtime'), { recursive: true });
+      fs.copyFileSync(process.execPath, path.join(contentDir, 'runtime', path.basename(process.execPath)));
+    } else if (t.nodes.length === 1) {
+      await fetchNode(nodeVersion, t.nodes[0], path.join(contentDir, 'runtime'));
+    } else {
+      for (const n of t.nodes) await fetchNode(nodeVersion, n, path.join(contentDir, 'runtime', n));
+    }
+    writeLaunchers(dir, target, contentDir);
+    if (t.platform !== 'win32') {
+      for (const f of ['README.md', 'LICENSE']) fs.copyFileSync(path.join(ROOT, f), path.join(dir, f));
+    }
     const archive = path.join(OUT, `${name}.${t.archive}`);
     if (t.archive === 'zip') sh('zip', ['-qr', '-y', archive, name], { cwd: DIST });
     else sh('tar', ['-czf', archive, name], { cwd: DIST });
@@ -171,7 +273,11 @@ async function main() {
   console.log(`\nFertig: ${OUT}`);
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}
+
+module.exports = { TARGETS, makeIcns };

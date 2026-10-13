@@ -74,7 +74,10 @@ async function route() {
   const match = ROUTES.find(([re]) => re.test(path));
   const view = match ? match[1]() : renderDashboard;
   const args = match ? path.match(match[0]).slice(1) : [];
-  for (const a of shell.querySelectorAll('.nav a')) a.classList.toggle('active', path.startsWith(a.getAttribute('href')) || (path === '#/' && a.getAttribute('href') === '#/dashboard'));
+  for (const a of shell.querySelectorAll('.nav a')) {
+    const href = a.getAttribute('href');
+    a.classList.toggle('active', href.length > 2 && (path.startsWith(href) || (path === '#/' && href === '#/dashboard')));
+  }
   shell.querySelector('.sidebar').classList.remove('open');
   const content = $('.content', shell);
   clear(content);
