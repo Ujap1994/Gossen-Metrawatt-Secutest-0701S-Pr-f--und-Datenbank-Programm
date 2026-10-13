@@ -1,6 +1,7 @@
 // Secutest Prüfmanager – Oberfläche (ohne Build-Schritt, native ES-Module)
 import { h, $, clear, toast, modal } from './ui.js';
 import { disclaimerContent } from './disclaimer.js';
+import { shutdownApp } from './shutdown.js';
 import { get, post, setLockedOutHandler } from './api.js';
 import { state, loadMeta, connectEvents, disconnectEvents, onSecutest } from './state.js';
 import { renderLogin } from './views/login.js';
@@ -136,7 +137,7 @@ function buildShell() {
     h('div', { class: 'brand' }, h('img', { src: '/img/icon.svg', alt: '' }), h('div', {}, 'Prüfmanager', h('small', {}, 'SECUTEST 0701S · VDE 0701/0702'))),
     h('nav', { class: 'nav' }, NAV.map(([href, ico, label]) => h('a', { href }, h('span', { class: 'ico' }, ico), label))),
     h('div', { class: 'spacer' }),
-    h('nav', { class: 'nav' }, h('a', { href: '#/audit' }, h('span', { class: 'ico' }, '🕘'), 'Änderungsprotokoll'), h('a', { href: '#', onclick: (e) => (e.preventDefault(), toggleTheme()) }, h('span', { class: 'ico' }, '🌓'), 'Hell/Dunkel'), h('a', { href: '#', onclick: (e) => (e.preventDefault(), modal({ title: 'Sicherheitshinweis & Haftungsausschluss', body: disclaimerContent(), wide: true })) }, h('span', { class: 'ico' }, '⚠'), 'Haftungsausschluss'))
+    h('nav', { class: 'nav' }, h('a', { href: '#/audit' }, h('span', { class: 'ico' }, '🕘'), 'Änderungsprotokoll'), h('a', { href: '#', onclick: (e) => (e.preventDefault(), toggleTheme()) }, h('span', { class: 'ico' }, '🌓'), 'Hell/Dunkel'), h('a', { href: '#', onclick: (e) => (e.preventDefault(), modal({ title: 'Sicherheitshinweis & Haftungsausschluss', body: disclaimerContent(), wide: true })) }, h('span', { class: 'ico' }, '⚠'), 'Haftungsausschluss'), h('a', { href: '#', onclick: (e) => (e.preventDefault(), shutdownApp()) }, h('span', { class: 'ico' }, '⏻'), 'Programm beenden'))
   );
   shell = h(
     'div',

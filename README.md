@@ -1,13 +1,17 @@
+> [!CAUTION]
+> ## ⚠ Haftungsausschluss / Sicherheitshinweis
+> **Prüfungen nach DIN VDE 0701/0702 und alle Arbeiten an elektrischen Anlagen und Geräten dürfen ausschließlich von Elektrofachkräften durchgeführt werden** (oder von elektrotechnisch unterwiesenen Personen unter Leitung und Aufsicht einer Elektrofachkraft). **Elektrischer Strom ist lebensgefährlich.**
+>
+> Dieses Projekt ist **Open Source und wird ohne jede Gewähr bereitgestellt. Es kann Fehler enthalten**, insbesondere bei Grenzwerten, Bewertungen, der Kommunikation mit dem Prüfgerät und den Anleitungen. Die Software ersetzt weder die Bedienungsanleitung des Prüfgeräts noch die gültigen Normen oder die fachliche Beurteilung durch eine Elektrofachkraft.
+>
+> **Die Autoren und Mitwirkenden übernehmen – soweit gesetzlich zulässig – keinerlei Haftung für Personen-, Sach- oder Vermögensschäden**, die direkt oder indirekt durch die Nutzung dieser Software entstehen. Die Nutzung erfolgt auf eigene Verantwortung. → [Vollständiger Haftungsausschluss](#haftungsausschluss)
+
 # Secutest Prüfmanager
 
 **Freies Prüf- und Datenbankprogramm für den Gossen Metrawatt SECUTEST 0701S / 0702S. Damit prüfst du elektrische Geräte nach DIN VDE 0701/0702, verwaltest sie und katalogisierst sie.**
 
 Das Programm steuert das Prüfgerät über die eingebaute RS-232-Schnittstelle und führt dich Schritt für Schritt mit Grafiken durch jede Prüfung. Alle Messwerte landen in einer verschlüsselten Datenbank, die in OneDrive oder iCloud Drive liegen kann. Die Anmeldung ist per Zwei-Faktor-Code geschützt (Bitwarden, Microsoft oder Google Authenticator), und an fällige Prüfungen erinnert das Programm per E-Mail oder Kalender.
 Es geht auch **ganz ohne Prüfgerät**: Messwerte lassen sich von Hand eintragen, oder du nimmst den eingebauten Simulator.
-
-> [!CAUTION]
-> **Sicherheitshinweis und Haftungsausschluss.** Prüfungen nach DIN VDE 0701/0702 und alle Arbeiten an elektrischen Anlagen und Geräten dürfen **nur Elektrofachkräfte** durchführen, oder elektrotechnisch unterwiesene Personen unter Leitung und Aufsicht einer Elektrofachkraft. **Elektrischer Strom ist lebensgefährlich.**
-> Dieses Projekt ist **Open Source und ohne Gewähr**. Es **kann Fehler enthalten**, etwa bei Grenzwerten, Bewertungen, der Gerätekommunikation oder den Anleitungen. Die Autoren übernehmen, soweit gesetzlich zulässig, **keine Haftung für Personen-, Sach- oder Vermögensschäden**. Die Software ersetzt weder die Bedienungsanleitung des Prüfgeräts noch die gültigen Normen oder dein fachliches Urteil. Den vollständigen Text findest du unter [Haftungsausschluss](#haftungsausschluss).
 
 <p align="center"><img src="docs/images/22-schritt-schutzleiter-live.png" alt="Prüfassistent: Schutzleiterwiderstand mit Live-Werten und Anschlussgrafik" width="900"></p>
 
@@ -87,6 +91,7 @@ Bei jeder Änderung baut GitHub automatisch ein neues Release. Unter **[Releases
 * Node.js ist **enthalten**, du musst nichts installieren.
 * Der Browser öffnet sich automatisch unter **http://127.0.0.1:3701**. Das Programm ist nur auf deinem Rechner erreichbar.
 * **Ohne Prüfgerät ausprobieren:** `Simulator-ohne-Hardware` starten.
+* **Beenden:** in der Oberfläche **⏻ Programm beenden** (Seitenleiste bzw. Anmeldeseite) oder Strg+C im Terminal. Ein zweiter Start öffnet einfach das bereits laufende Programm im Browser.
 * **Update:** neues Paket entpacken. Deine Datenbanken liegen nicht im Programmordner und bleiben erhalten.
 * Prüfsummen der Pakete stehen in `SHA256SUMS.txt`.
 

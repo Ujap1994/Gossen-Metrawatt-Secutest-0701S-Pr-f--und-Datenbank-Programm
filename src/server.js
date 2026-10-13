@@ -30,7 +30,7 @@ function parseArgs(argv) {
   return a;
 }
 
-function createApp({ sessions = new SessionManager(), scheduler = new ReminderScheduler(), secutest = manager } = {}) {
+function createApp({ sessions = new SessionManager(), scheduler = new ReminderScheduler(), secutest = manager, onShutdown = null } = {}) {
   const app = express();
   app.disable('x-powered-by');
   app.set('etag', false);
@@ -77,6 +77,13 @@ function createApp({ sessions = new SessionManager(), scheduler = new ReminderSc
       db: authed ? { id: sessions.active.dbEntry.id, name: sessions.active.sdb.getMeta('db_name'), file: sessions.active.sdb.file } : null,
       secutest: authed ? { connected: secutest.driver.connected, port: secutest.driver.portPath, simulator: !!secutest.driver.simulator } : null,
     });
+  });
+
+  // Programm beenden (Button in der Oberfläche – wichtig bei Start ohne Terminalfenster)
+  app.post('/api/shutdown', (req, res) => {
+    if (!onShutdown) return res.status(501).json({ error: 'Beenden ist in diesem Modus nicht verfügbar.' });
+    res.json({ ok: true });
+    setTimeout(() => onShutdown('Beendet über die Oberfläche'), 150);
   });
 
   app.post('/api/disclaimer/accept', (req, res) => {
@@ -160,39 +167,54 @@ async function main() {
   const cfg = config.load();
   const host = args.host || cfg.server.host;
   const port = args.port || cfg.server.port;
-  const { app, sessions, secutest } = createApp();
+  const url = `http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`;
+  let server = null;
+  let stopping = false;
+  const shutdown = async (reason = 'Programm beendet') => {
+    if (stopping) return;
+    stopping = true;
+    console.log(`\n${reason} …`);
+    sessions.lock(reason);
+    await secutest.disconnect().catch(() => {});
+    secutest.stopWatcher();
+    if (server) server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 1500).unref();
+  };
+  const { app, sessions, secutest } = createApp({ onShutdown: shutdown });
 
-  const server = app.listen(port, host, () => {
-    const url = `http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`;
+  server = app.listen(port, host, () => {
     console.log(`\n  Secutest Prüfmanager ${pkg.version}`);
     console.log(`  ➜ Oberfläche: ${url}`);
     console.log(`  ➜ Konfiguration: ${config.appDataDir()}`);
     if (args.simulator) console.log('  ➜ SECUTEST-Simulator aktiv (keine Hardware nötig)');
-    console.log('  Beenden mit Strg+C\n');
+    console.log('  Beenden mit Strg+C oder über „Programm beenden“ in der Oberfläche\n');
     if (args.open && !process.env.CI) openBrowser(url);
+    // Schnittstelle erst nach erfolgreichem Start (sonst belegt eine zweite Instanz die Ports)
+    if (args.simulator) {
+      secutest.connect({ simulator: true }).catch((e) => console.error('Simulator:', e.message));
+    } else if (secutest.cfg().autoConnect) {
+      secutest.startWatcher();
+      secutest.autoDetect({ connect: true }).then(
+        (r) => r.found && console.log(`  SECUTEST automatisch gefunden an ${r.found.path}`),
+        () => {}
+      );
+    }
   });
-  server.on('error', (e) => {
-    console.error(e.code === 'EADDRINUSE' ? `Port ${port} ist bereits belegt – läuft das Programm schon? (Option --port …)` : e.message);
+  server.on('error', async (e) => {
+    if (e.code === 'EADDRINUSE') {
+      // Läuft das Programm schon? Dann nur den Browser öffnen (Einzelinstanz)
+      const running = await fetch(`${url}/api/status`, { signal: AbortSignal.timeout(2000) })
+        .then((r) => r.json())
+        .catch(() => null);
+      if (running?.version) {
+        console.log(`Secutest Prüfmanager läuft bereits – öffne ${url}`);
+        if (args.open && !process.env.CI) openBrowser(url);
+        process.exit(0);
+      }
+      console.error(`Port ${port} ist bereits durch ein anderes Programm belegt. Start mit --port <Nummer> möglich.`);
+    } else console.error(e.message);
     process.exit(1);
   });
-
-  if (args.simulator) {
-    secutest.connect({ simulator: true }).catch((e) => console.error('Simulator:', e.message));
-  } else if (secutest.cfg().autoConnect) {
-    secutest.startWatcher();
-    secutest.autoDetect({ connect: true }).then(
-      (r) => r.found && console.log(`  SECUTEST automatisch gefunden an ${r.found.path}`),
-      () => {}
-    );
-  }
-
-  const shutdown = async () => {
-    console.log('\nBeende …');
-    sessions.lock('Programm beendet');
-    await secutest.disconnect().catch(() => {});
-    server.close(() => process.exit(0));
-    setTimeout(() => process.exit(0), 1500).unref();
-  };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 }

@@ -2,6 +2,7 @@
 import { h, clear, toast, field, input, select, modal, fill } from '../ui.js';
 import { get, post, del } from '../api.js';
 import { disclaimerContent } from '../disclaimer.js';
+import { shutdownApp } from '../shutdown.js';
 
 const PROVIDER_ICON = { onedrive: '☁️', icloud: '🍏', local: '💻' };
 const PROVIDER_NAME = { onedrive: 'OneDrive', icloud: 'iCloud Drive', local: 'Lokal' };
@@ -100,7 +101,7 @@ export async function renderLogin(root, { message, onUnlocked }) {
         h('p', { class: 'muted small', style: { marginTop: '12px' } }, 'Jede Datenbank ist eine eigene, verschlüsselte Datei (AES-256) – z. B. eine für deine eigenen Geräte und je eine für Bekannte. Anmeldung mit Passwort + Code aus deiner Authenticator-App (Bitwarden, Microsoft, Google …).')
       ),
       discovered,
-      h('p', { class: 'small muted', style: { marginTop: '14px' } }, '⚠ Open-Source-Software ohne Gewähr. Prüfungen nur durch Elektrofachkräfte. ', h('a', { href: '#', onclick: (e) => (e.preventDefault(), showDisclaimer()) }, 'Haftungsausschluss lesen'))
+      h('p', { class: 'small muted', style: { marginTop: '14px' } }, '⚠ Open-Source-Software ohne Gewähr. Prüfungen nur durch Elektrofachkräfte. ', h('a', { href: '#', onclick: (e) => (e.preventDefault(), showDisclaimer()) }, 'Haftungsausschluss lesen'), ' · ', h('a', { href: '#', onclick: (e) => (e.preventDefault(), shutdownApp()) }, '⏻ Programm beenden'))
     );
   }
 
