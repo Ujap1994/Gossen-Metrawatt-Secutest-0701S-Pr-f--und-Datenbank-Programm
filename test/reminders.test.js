@@ -11,7 +11,7 @@ const { runReminders, pendingKinds } = require('../src/reminders/scheduler');
 const { createDatabase } = require('../src/db/database');
 const repo = require('../src/db/repo');
 
-test.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+test.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
 
 test('iCalendar mit Ganztagstermin und Erinnerung', () => {
   const ics = buildCalendar([{ id: 1, name: 'Wasserkocher, Küche; groß', inventory_no: 'G-0001', protection_class: 'SK I', next_due_date: '2027-03-31' }], { dbUuid: 'u', dbName: 'Test', alarmDays: 7 });

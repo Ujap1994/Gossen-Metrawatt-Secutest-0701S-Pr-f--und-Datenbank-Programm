@@ -11,6 +11,7 @@ const { SecutestManager } = require('../src/secutest/manager');
 const totp = require('../src/auth/totp');
 
 let server;
+let sessions;
 let base;
 let cookie = '';
 const secutest = new SecutestManager();
@@ -24,15 +25,18 @@ async function call(method, p, body, { headers = {} } = {}) {
 }
 
 test.before(async () => {
-  const { app } = createApp({ secutest });
+  const created = createApp({ secutest });
+  const { app } = created;
+  sessions = created.sessions;
   await new Promise((res) => (server = app.listen(0, '127.0.0.1', res)));
   base = `http://127.0.0.1:${server.address().port}/api`;
 });
 
 test.after(async () => {
   await secutest.disconnect().catch(() => {});
-  server.close();
-  fs.rmSync(dir, { recursive: true, force: true });
+  sessions.lock('Testende'); // Datenbank schließen (Windows sperrt geöffnete Dateien)
+  await new Promise((r) => server.close(r));
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 });
 
 test('Kompletter Ablauf: Datenbank + 2FA, Gerät, Prüfung, Sperren, Entsperren', async () => {

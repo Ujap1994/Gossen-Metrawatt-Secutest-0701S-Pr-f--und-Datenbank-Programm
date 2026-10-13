@@ -9,7 +9,7 @@ process.env.SECUTEST_HOME = path.join(dir, 'home');
 const { createDatabase, openDatabase, listBackups } = require('../src/db/database');
 const repo = require('../src/db/repo');
 
-test.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+test.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
 
 test('addMonths klemmt Monatsende', () => {
   assert.equal(repo.addMonths('2026-01-31', 1), '2026-02-28');
