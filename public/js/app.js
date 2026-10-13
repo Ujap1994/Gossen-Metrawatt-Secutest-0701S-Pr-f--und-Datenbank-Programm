@@ -9,7 +9,7 @@ import { renderDashboard } from './views/dashboard.js';
 import { renderDeviceList, renderDeviceForm, renderDeviceDetail } from './views/devices.js';
 import { renderInspect, renderInspectionDetail, wizardDirty } from './views/inspect.js';
 import { renderSecutest } from './views/secutest.js';
-import { renderSettings, renderReminders, renderAudit, renderInspections } from './views/settings.js';
+import { renderSettings, renderSecuritySettings, renderProgramSettings, renderReminders, renderAudit, renderInspections } from './views/settings.js';
 
 const root = document.getElementById('app');
 
@@ -48,6 +48,8 @@ const ROUTES = [
   [/^#\/secutest$/, () => renderSecutest],
   [/^#\/reminders$/, () => renderReminders],
   [/^#\/settings$/, () => renderSettings],
+  [/^#\/settings\/security$/, () => renderSecuritySettings],
+  [/^#\/settings\/program$/, () => renderProgramSettings],
   [/^#\/audit$/, () => renderAudit],
 ];
 
@@ -187,7 +189,7 @@ async function startApp() {
   }
   buildShell();
   connectEvents();
-  if (state.meta.recoveryRemaining <= 2) toast(`Nur noch ${state.meta.recoveryRemaining} Wiederherstellungscodes übrig – bitte in den Einstellungen neue erzeugen.`, 'warn', 8000);
+  if (state.meta.security?.twoFactor && state.meta.recoveryRemaining <= 2) toast(`Nur noch ${state.meta.recoveryRemaining} Wiederherstellungscodes übrig – bitte unter Einstellungen → Sicherheit neue erzeugen.`, 'warn', 8000);
   route();
 }
 

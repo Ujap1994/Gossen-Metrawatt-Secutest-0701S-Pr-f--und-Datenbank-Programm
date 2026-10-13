@@ -1,6 +1,8 @@
 'use strict';
 /**
- * Verschlüsselte SQLite-Datenbank (SQLCipher-kompatibel, AES-256, PBKDF2-HMAC-SHA512).
+ * SQLite-Datenbank, wahlweise verschlüsselt (SQLCipher-kompatibel, AES-256, PBKDF2-HMAC-SHA512)
+ * oder – auf ausdrücklichen Wunsch – ohne Passwort. Die Verschlüsselung lässt sich jederzeit
+ * nachträglich ein- und ausschalten (PRAGMA rekey).
  *
  * Eine Datei = ein Mandant (z. B. „Meine Geräte“, „Familie Müller“).
  * Die Datei kann in OneDrive / iCloud Drive liegen:
@@ -29,10 +31,31 @@ class DbError extends Error {
   }
 }
 
-function applyKey(db, password) {
+const SQLITE_HEADER = Buffer.from('SQLite format 3\0', 'latin1');
+
+function cipherConfig(db) {
   db.pragma("cipher='sqlcipher'");
   db.pragma('legacy=4');
+}
+
+function applyKey(db, password) {
+  cipherConfig(db);
   db.key(Buffer.from(String(password), 'utf8'));
+}
+
+/** Unverschlüsselte SQLite-Dateien beginnen mit „SQLite format 3\0“, verschlüsselte sehen zufällig aus. */
+function isEncryptedFile(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(16);
+    const n = fs.readSync(fd, buf, 0, 16, 0);
+    return !(n === 16 && buf.equals(SQLITE_HEADER));
+  } catch {
+    return true;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
 }
 
 function validatePassword(pw) {
@@ -143,7 +166,7 @@ function listBackups(file) {
       .reverse()
       .map((f) => {
         const st = fs.statSync(path.join(dir, f));
-        return { file: path.join(dir, f), name: f, size: st.size, mtime: st.mtime.toISOString() };
+        return { file: path.join(dir, f), name: f, size: st.size, mtime: st.mtime.toISOString(), encrypted: isEncryptedFile(path.join(dir, f)) };
       });
   } catch {
     return [];
@@ -159,9 +182,10 @@ function lastAutoBackupToday(file) {
 // Öffnen / Anlegen
 // ---------------------------------------------------------------------------
 class SecuDb {
-  constructor(db, file) {
+  constructor(db, file, { encrypted = true } = {}) {
     this.db = db;
     this.file = file;
+    this.encrypted = encrypted;
     this.lockSince = new Date().toISOString();
     writeLock(file, this.lockSince);
     this.heartbeat = setInterval(() => {
@@ -199,10 +223,21 @@ class SecuDb {
     this.setMeta(key, JSON.stringify(obj));
   }
 
+  /** Passwort ändern – oder eine bisher unverschlüsselte Datenbank verschlüsseln. */
   changePassword(newPassword) {
     validatePassword(newPassword);
-    createBackup(this.file, 'vor-passwortwechsel');
+    createBackup(this.file, this.encrypted ? 'vor-passwortwechsel' : 'vor-verschluesselung');
+    if (!this.encrypted) cipherConfig(this.db);
     this.db.rekey(Buffer.from(newPassword, 'utf8'));
+    this.encrypted = true;
+  }
+
+  /** Verschlüsselung entfernen – die Datei ist danach ohne Passwort lesbar. */
+  removePassword() {
+    if (!this.encrypted) return;
+    createBackup(this.file, 'vor-entschluesselung');
+    this.db.rekey(Buffer.alloc(0));
+    this.encrypted = false;
   }
 
   backup(reason) {
@@ -220,16 +255,18 @@ class SecuDb {
 }
 
 function openRaw(file, password) {
+  const encrypted = isEncryptedFile(file);
+  if (encrypted && !password) throw new DbError('PASSWORD_REQUIRED', 'Diese Datenbank ist mit einem Passwort geschützt.');
   const db = new Database(file, { fileMustExist: true });
   try {
-    applyKey(db, password);
+    if (encrypted) applyKey(db, password);
     db.prepare('SELECT count(*) AS n FROM sqlite_master').get();
   } catch (e) {
     db.close();
     if (e.code === 'SQLITE_NOTADB') throw new DbError('WRONG_PASSWORD', 'Passwort falsch oder Datei ist keine Prüfmanager-Datenbank.');
     throw e;
   }
-  return db;
+  return { db, encrypted };
 }
 
 /**
@@ -242,7 +279,7 @@ function openDatabase(file, password, { force = false } = {}) {
   if (lock && !lock.stale && !lock.mine && !force) {
     throw new DbError('LOCKED', `Die Datenbank ist vermutlich auf „${lock.host}“ (${lock.user}) geöffnet (seit ${lock.since}). Gleichzeitiges Arbeiten über die Cloud kann Daten überschreiben.`, { lock });
   }
-  const db = openRaw(file, password);
+  const { db, encrypted } = openRaw(file, password);
   configure(db);
   // Vor Migrationen / einmal täglich automatisch sichern
   try {
@@ -252,19 +289,21 @@ function openDatabase(file, password, { force = false } = {}) {
     /* Sicherung darf das Öffnen nicht verhindern */
   }
   migrate(db);
-  return new SecuDb(db, file);
+  return new SecuDb(db, file, { encrypted });
 }
 
+/** Legt eine Datenbank an – mit Passwort verschlüsselt, ohne Passwort (null/'') unverschlüsselt. */
 function createDatabase(file, password, { name, settings = {} } = {}) {
-  validatePassword(password);
+  const encrypted = !!password;
+  if (encrypted) validatePassword(password);
   if (!file.toLowerCase().endsWith(DB_EXTENSION)) file += DB_EXTENSION;
   if (fs.existsSync(file)) throw new DbError('EXISTS', `Die Datei existiert bereits: ${file}`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new Database(file);
-  applyKey(db, password);
+  if (encrypted) applyKey(db, password);
   configure(db);
   migrate(db);
-  const handle = new SecuDb(db, file);
+  const handle = new SecuDb(db, file, { encrypted });
   handle.setMeta('db_uuid', crypto.randomUUID());
   handle.setMeta('db_name', name || path.basename(file, DB_EXTENSION));
   handle.setMeta('created_at', new Date().toISOString());
@@ -272,11 +311,53 @@ function createDatabase(file, password, { name, settings = {} } = {}) {
   return handle;
 }
 
-/** Prüft nur das Passwort (z. B. vor dem Löschen), ohne die DB dauerhaft zu öffnen. */
+/** Prüft nur das Passwort (z. B. vor kritischen Aktionen), ohne die DB dauerhaft zu öffnen. */
 function verifyPassword(file, password) {
-  const db = openRaw(file, password);
+  const { db } = openRaw(file, password);
   db.close();
   return true;
+}
+
+/** Löscht unverschlüsselte Sicherungen (z. B. nachdem die Datenbank verschlüsselt wurde). */
+function purgePlainBackups(file) {
+  let n = 0;
+  for (const b of listBackups(file)) {
+    if (b.encrypted) continue;
+    try {
+      fs.unlinkSync(b.file);
+      n += 1;
+    } catch {
+      /* Datei evtl. gesperrt (Cloud) – beim nächsten Mal */
+    }
+  }
+  return n;
+}
+
+/**
+ * Kopiert die Sicherungen einer Datenbank in den Sicherungsordner neben `targetFile`
+ * und entfernt sie am alten Ort (beim Verschieben der Datenbank).
+ */
+function moveBackups(sourceFile, targetFile) {
+  const from = listBackups(sourceFile);
+  if (!from.length) return 0;
+  const dir = backupDir(targetFile);
+  fs.mkdirSync(dir, { recursive: true });
+  const oldBase = path.basename(sourceFile, DB_EXTENSION);
+  const newBase = path.basename(targetFile, DB_EXTENSION);
+  let n = 0;
+  for (const b of from) {
+    const dest = path.join(dir, newBase + b.name.slice(oldBase.length));
+    if (fs.existsSync(dest)) continue;
+    fs.copyFileSync(b.file, dest);
+    fs.unlinkSync(b.file);
+    n += 1;
+  }
+  try {
+    fs.rmdirSync(backupDir(sourceFile)); // nur wenn leer
+  } catch {
+    /* nicht leer oder schon weg */
+  }
+  return n;
 }
 
 module.exports = {
@@ -285,8 +366,11 @@ module.exports = {
   openDatabase,
   createDatabase,
   verifyPassword,
+  isEncryptedFile,
   createBackup,
   listBackups,
+  purgePlainBackups,
+  moveBackups,
   readLock,
   validatePassword,
 };

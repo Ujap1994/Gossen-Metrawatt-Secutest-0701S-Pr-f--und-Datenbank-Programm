@@ -6,17 +6,17 @@ const os = require('os');
 const QRCode = require('qrcode');
 const { asyncRouter } = require('./util');
 const repo = require('../db/repo');
-const { listBackups } = require('../db/database');
+const { listBackups, purgePlainBackups } = require('../db/database');
+const { detectCloudLocations, localFolder, providerForPath } = require('../db/cloud');
 const { applicableProcedures, buildProcedure, listProcedures, suggestDeviceType, autoModeCheck } = require('../vde/procedures');
 const { evaluateInspection } = require('../vde/evaluate');
 const { PROFILES, QUANTITIES, limitsFor } = require('../vde/limits');
 const { FAIL_ACTIONS, DEVICE_STATUS } = require('../vde/actions');
-const { buildCalendar } = require('../reminders/ics');
-const { runReminders, sendCalendarInvite } = require('../reminders/scheduler');
+const { runReminders, sendCalendarInvite, autoCalendarUpdate, calendarFor } = require('../reminders/scheduler');
 const { sendMail, PRESETS, smtpConfigured } = require('../reminders/mailer');
 const { inspectionReport, labelSheet, DEVICE_TYPES, MODES } = require('../report/report');
 const totp = require('../auth/totp');
-const { AuthError } = require('../auth/session');
+const { AuthError, SessionManager } = require('../auth/session');
 
 const DEVICE_TYPE_HINTS = {
   standard: 'Normales Gerät ohne Besonderheiten',
@@ -35,8 +35,9 @@ module.exports = function dataRoutes(sessions, scheduler) {
   r.get('/meta', (req, res) => {
     const sdb = req.sdb;
     res.json({
-      db: { id: req.dbEntry.id, name: sdb.getMeta('db_name'), uuid: sdb.getMeta('db_uuid'), created_at: sdb.getMeta('created_at'), file: sdb.file, host: os.hostname() },
+      db: { id: req.dbEntry.id, name: sdb.getMeta('db_name'), uuid: sdb.getMeta('db_uuid'), created_at: sdb.getMeta('created_at'), file: sdb.file, host: os.hostname(), provider: providerForPath(sdb.file) },
       settings: repo.publicSettings(repo.getSettings(sdb)),
+      security: SessionManager.security(sdb),
       recoveryRemaining: sdb.getJson('recovery_codes', []).length,
       procedures: listProcedures(),
       actions: FAIL_ACTIONS,
@@ -74,18 +75,43 @@ module.exports = function dataRoutes(sessions, scheduler) {
     res.json(repo.publicSettings(s));
   });
 
-  // ---------- Sicherheit ----------
+  // ---------- Sicherheit (Passwort und 2FA – beides optional) ----------
+  const reauth = (req) => sessions.reauth(req.sdb, { code: req.body?.code, recoveryCode: req.body?.recoveryCode, password: req.body?.current });
+
+  r.get('/security', (req, res) => res.json(SessionManager.security(req.sdb)));
+
+  /** Passwort festlegen (verschlüsselt eine bisher offene Datenbank) oder ändern */
   r.post('/security/password', (req, res) => {
-    const { code, next, next2 } = req.body || {};
-    sessions.reauth(req.sdb, { code });
+    const { next, next2 } = req.body || {};
+    reauth(req);
     if (next !== next2) throw new AuthError('Die neuen Passwörter stimmen nicht überein.', 400);
+    const wasEncrypted = req.sdb.encrypted;
     req.sdb.changePassword(next);
-    repo.audit(req.sdb, 'passwort-geaendert', 'db', null, null);
-    res.json({ ok: true });
+    repo.audit(req.sdb, wasEncrypted ? 'passwort-geaendert' : 'verschluesselung-aktiviert', 'db', null, null);
+    const plainBackups = listBackups(req.sdb.file).filter((b) => !b.encrypted).length;
+    res.json({ ok: true, encrypted: true, plainBackups });
   });
 
+  /** Passwort entfernen – die Datei ist danach unverschlüsselt */
+  r.post('/security/password/remove', (req, res) => {
+    if (!req.sdb.encrypted) return res.json({ ok: true, encrypted: false });
+    reauth(req);
+    if (req.body?.confirm !== true) throw new AuthError('Bitte das Entfernen der Verschlüsselung ausdrücklich bestätigen.', 400);
+    req.sdb.removePassword();
+    repo.audit(req.sdb, 'verschluesselung-entfernt', 'db', null, null);
+    res.json({ ok: true, encrypted: false });
+  });
+
+  r.post('/security/backups/purge-plain', (req, res) => {
+    if (!req.sdb.encrypted) throw new AuthError('Die Datenbank selbst ist unverschlüsselt – zuerst ein Passwort festlegen.', 400);
+    const removed = purgePlainBackups(req.sdb.file);
+    repo.audit(req.sdb, 'unverschluesselte-sicherungen-geloescht', 'db', null, `${removed} Datei(en)`);
+    res.json({ removed, backups: listBackups(req.sdb.file) });
+  });
+
+  /** 2FA einrichten (erstmals) oder neu einrichten (z. B. neues Handy) */
   r.post('/security/2fa/begin', async (req, res) => {
-    sessions.reauth(req.sdb, { code: req.body.code });
+    reauth(req);
     const secret = totp.generateSecret();
     pending2fa.set(req.sdb, secret);
     const uri = totp.otpauthUri(secret, { account: req.sdb.getMeta('db_name') });
@@ -94,22 +120,50 @@ module.exports = function dataRoutes(sessions, scheduler) {
 
   r.post('/security/2fa/finish', (req, res) => {
     const secret = pending2fa.get(req.sdb);
-    if (!secret) throw new AuthError('Bitte die Neueinrichtung zuerst starten.', 400);
+    if (!secret) throw new AuthError('Bitte die Einrichtung zuerst starten.', 400);
     const step = totp.verify(secret, req.body.code);
     if (step == null) throw new AuthError('Code der neuen Einrichtung ist falsch.', 401);
+    const first = !req.sdb.getMeta('totp_secret');
     req.sdb.setMeta('totp_secret', secret);
     req.sdb.setMeta('totp_last_step', String(step));
     pending2fa.delete(req.sdb);
-    repo.audit(req.sdb, '2fa-neu-eingerichtet', 'db', null, null);
+    let recoveryCodes = null;
+    if (first || !req.sdb.getJson('recovery_codes', []).length) {
+      recoveryCodes = totp.generateRecoveryCodes();
+      req.sdb.setJson('recovery_codes', recoveryCodes.map(totp.hashRecoveryCode));
+    }
+    repo.audit(req.sdb, first ? '2fa-aktiviert' : '2fa-neu-eingerichtet', 'db', null, null);
+    res.json({ ok: true, recoveryCodes });
+  });
+
+  /** 2FA abschalten (Bestätigung mit aktuellem Code) */
+  r.post('/security/2fa/disable', (req, res) => {
+    if (!req.sdb.getMeta('totp_secret')) return res.json({ ok: true });
+    reauth(req);
+    req.sdb.db.prepare("DELETE FROM meta WHERE key IN ('totp_secret', 'totp_last_step', 'recovery_codes')").run();
+    repo.audit(req.sdb, '2fa-deaktiviert', 'db', null, null);
     res.json({ ok: true });
   });
 
   r.post('/security/recovery', (req, res) => {
-    sessions.reauth(req.sdb, { code: req.body.code });
+    if (!req.sdb.getMeta('totp_secret')) throw new AuthError('Wiederherstellungscodes gibt es nur mit Zwei-Faktor-Anmeldung.', 400);
+    reauth(req);
     const codes = totp.generateRecoveryCodes();
     req.sdb.setJson('recovery_codes', codes.map(totp.hashRecoveryCode));
     repo.audit(req.sdb, 'wiederherstellungscodes-neu', 'db', null, null);
     res.json({ codes });
+  });
+
+  // ---------- Speicherort ----------
+  r.get('/database/locations', (req, res) => {
+    res.json({ current: req.sdb.file, provider: providerForPath(req.sdb.file), cloud: detectCloudLocations(), local: localFolder() });
+  });
+
+  /** Datenbank verschieben (lokal ↔ OneDrive/iCloud/eigener Ordner) */
+  r.post('/database/move', (req, res) => {
+    reauth(req);
+    const out = sessions.moveActive({ folder: req.body?.folder, password: req.body?.password ?? req.body?.current, withBackups: req.body?.withBackups !== false });
+    res.json({ ok: true, ...out, provider: providerForPath(out.file) });
   });
 
   r.post('/backup', (req, res) => {
@@ -122,7 +176,28 @@ module.exports = function dataRoutes(sessions, scheduler) {
   r.get('/devices', (req, res) => res.json(repo.listDevices(req.sdb, req.query)));
   r.post('/devices', (req, res) => res.status(201).json(repo.createDevice(req.sdb, req.body || {})));
   r.get('/devices/:id', (req, res) => res.json(repo.getDeviceDetail(req.sdb, Number(req.params.id))));
-  r.put('/devices/:id', (req, res) => res.json(repo.updateDevice(req.sdb, Number(req.params.id), req.body || {})));
+  r.put('/devices/:id', async (req, res) => {
+    const id = Number(req.params.id);
+    const before = repo.getDevice(req.sdb, id);
+    const after = repo.updateDevice(req.sdb, id, req.body || {});
+    const invite = after.next_due_date !== before.next_due_date ? await autoCalendarUpdate(req.sdb, [id], { previousDue: { [id]: before.next_due_date } }) : null;
+    res.json({ ...after, invite });
+  });
+
+  /** Prüftermine verschieben – ohne Datum auf den nächsten Monat */
+  r.post('/devices/postpone', async (req, res) => {
+    const out = repo.postponeDevices(req.sdb, req.body?.ids, { date: req.body?.date || null, note: req.body?.note });
+    const invite = await autoCalendarUpdate(req.sdb, out.updated.map((u) => u.id), { previousDue: Object.fromEntries(out.updated.map((u) => [u.id, u.from])) });
+    res.json({ ...out, invite });
+  });
+
+  /** Prüfintervall mehrerer Geräte ändern */
+  r.post('/devices/interval', async (req, res) => {
+    const out = repo.changeInterval(req.sdb, req.body?.ids, req.body?.months, { recalc: req.body?.recalc !== false });
+    const moved = out.filter((x) => x.dueTo !== x.dueFrom);
+    const invite = await autoCalendarUpdate(req.sdb, moved.map((x) => x.id), { previousDue: Object.fromEntries(moved.map((x) => [x.id, x.dueFrom])) });
+    res.json({ devices: out, invite });
+  });
   r.delete('/devices/:id', (req, res) => res.json(repo.deleteDevice(req.sdb, Number(req.params.id))));
   r.post('/devices/:id/duplicate', (req, res) => res.status(201).json(repo.duplicateDevice(req.sdb, Number(req.params.id))));
 
@@ -186,7 +261,8 @@ module.exports = function dataRoutes(sessions, scheduler) {
     const out = repo.saveInspection(req.sdb, req.body || {});
     let invite = null;
     const settings = repo.getSettings(req.sdb);
-    const wantInvite = req.body.sendInvite ?? (settings.reminders.enabled && settings.reminders.calendarInvite);
+    const r = settings.reminders;
+    const wantInvite = req.body.sendInvite ?? (r.enabled && r.calendarInvite && r.channel !== 'mail');
     if (wantInvite && out.inspection.result === 'bestanden' && out.inspection.device.reminder_enabled && smtpConfigured(settings)) {
       try {
         invite = { ok: true, ...(await sendCalendarInvite(req.sdb, out.inspection.device_id)) };
@@ -220,9 +296,8 @@ module.exports = function dataRoutes(sessions, scheduler) {
       .split(',')
       .map(Number)
       .filter(Boolean);
-    const devices = (ids.length ? ids.map((id) => repo.getDevice(req.sdb, id)) : repo.listDevices(req.sdb, { status: 'alle-aktiven' })).filter((d) => d.next_due_date && d.reminder_enabled);
-    const settings = repo.getSettings(req.sdb);
-    const ics = buildCalendar(devices, { dbUuid: req.sdb.getMeta('db_uuid'), dbName: req.sdb.getMeta('db_name'), alarmDays: settings.reminders.calendarAlarmDays, ownerName: settings.owner.name });
+    const grouping = ['due', 'monthly'].includes(req.query.grouping) ? req.query.grouping : undefined;
+    const ics = calendarFor(req.sdb, ids, { grouping });
     res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="Prueftermine_${encodeURIComponent(req.sdb.getMeta('db_name'))}.ics"`);
     res.send(ics);

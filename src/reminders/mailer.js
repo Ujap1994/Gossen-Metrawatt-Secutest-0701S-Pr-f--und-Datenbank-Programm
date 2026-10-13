@@ -57,30 +57,57 @@ function fmtDate(iso) {
 }
 
 /** Sammel-Mail mit allen fälligen Geräten */
-function reminderContent(dbName, items) {
+const MONTH_NAMES = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
+const monthOf = (iso) => `${MONTH_NAMES[Number(iso.slice(5, 7)) - 1]} ${iso.slice(0, 4)}`;
+
+/**
+ * Inhalt der Erinnerungsmail. grouping 'monthly': Geräte nach Fälligkeitsmonat gegliedert,
+ * überfällige Geräte in einem eigenen Abschnitt.
+ */
+function reminderContent(dbName, items, { grouping = 'due' } = {}) {
   const rows = items
     .map(({ device: d, days }) => {
       const state = days < 0 ? `seit ${-days} Tag(en) überfällig` : days === 0 ? 'heute fällig' : `in ${days} Tag(en) fällig`;
-      return { d, state };
+      return { d, state, overdue: days < 0 };
     })
     .sort((a, b) => (a.d.next_due_date < b.d.next_due_date ? -1 : 1));
-  const subject = `Prüferinnerung (${dbName}): ${items.length} Gerät(e) – DIN VDE 0701-0702`;
+  // Abschnitte: je Gerät eine Liste – monatlich: „Überfällig“ + je Monat
+  const sections = [];
+  if (grouping === 'monthly') {
+    const overdue = rows.filter((r) => r.overdue);
+    if (overdue.length) sections.push({ title: 'Überfällig', rows: overdue });
+    for (const r of rows.filter((x) => !x.overdue)) {
+      const title = `Fällig im ${monthOf(r.d.next_due_date)}`;
+      let sec = sections.find((x) => x.title === title);
+      if (!sec) sections.push((sec = { title, rows: [] }));
+      sec.rows.push(r);
+    }
+  } else sections.push({ title: null, rows });
+  const months = [...new Set(rows.filter((r) => !r.overdue).map((r) => monthOf(r.d.next_due_date)))];
+  const subject =
+    grouping === 'monthly' && months.length
+      ? `Prüferinnerung ${months.join(', ')} (${dbName}): ${items.length} Gerät(e) – DIN VDE 0701-0702`
+      : `Prüferinnerung (${dbName}): ${items.length} Gerät(e) – DIN VDE 0701-0702`;
+  const line = ({ d, state }) => `• ${d.inventory_no}  ${d.name}${d.location ? ` (${d.location})` : ''} – fällig am ${fmtDate(d.next_due_date)}, ${state}${d.postponed_from ? ` (verschoben, ursprünglich ${fmtDate(d.postponed_from)})` : ''}`;
   const text =
-    `Hallo,\n\nfolgende Geräte aus der Datenbank „${dbName}“ müssen geprüft werden:\n\n` +
-    rows.map(({ d, state }) => `• ${d.inventory_no}  ${d.name}${d.location ? ` (${d.location})` : ''} – fällig am ${fmtDate(d.next_due_date)}, ${state}`).join('\n') +
+    `Hallo,\n\nfolgende Geräte aus der Datenbank „${dbName}“ müssen geprüft werden:\n` +
+    sections.map((sec) => `${sec.title ? `\n${sec.title}:\n` : '\n'}${sec.rows.map(line).join('\n')}`).join('\n') +
     `\n\nDiese Nachricht wurde automatisch vom Secutest Prüfmanager erstellt.`;
-  const html = `<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#1d2733">
-  <h2 style="color:#0b5cad;margin:0 0 8px">Prüferinnerung</h2>
-  <p>Folgende Geräte aus der Datenbank <b>${escHtml(dbName)}</b> sind zur Wiederholungsprüfung nach DIN VDE 0701-0702 fällig:</p>
+  const cell = 'border-top:1px solid #d5dde6';
+  const table = (sec) => `${sec.title ? `<h3 style="margin:14px 0 6px;color:${sec.title === 'Überfällig' ? '#b3261e' : '#0b5cad'}">${escHtml(sec.title)}</h3>` : ''}
   <table cellpadding="6" cellspacing="0" style="border-collapse:collapse;border:1px solid #d5dde6">
     <tr style="background:#eef3f8"><th align="left">Inv.-Nr.</th><th align="left">Gerät</th><th align="left">Standort</th><th align="left">Fällig am</th><th align="left">Status</th></tr>
-    ${rows
+    ${sec.rows
       .map(
         ({ d, state }) =>
-          `<tr><td style="border-top:1px solid #d5dde6">${escHtml(d.inventory_no)}</td><td style="border-top:1px solid #d5dde6">${escHtml(d.name)}</td><td style="border-top:1px solid #d5dde6">${escHtml(d.location || '')}</td><td style="border-top:1px solid #d5dde6">${fmtDate(d.next_due_date)}</td><td style="border-top:1px solid #d5dde6;color:${state.includes('überfällig') ? '#b3261e' : '#8a5a00'}">${escHtml(state)}</td></tr>`
+          `<tr><td style="${cell}">${escHtml(d.inventory_no)}</td><td style="${cell}">${escHtml(d.name)}</td><td style="${cell}">${escHtml(d.location || '')}</td><td style="${cell}">${fmtDate(d.next_due_date)}${d.postponed_from ? `<br><small>verschoben</small>` : ''}</td><td style="${cell};color:${state.includes('überfällig') ? '#b3261e' : '#8a5a00'}">${escHtml(state)}</td></tr>`
       )
       .join('')}
-  </table>
+  </table>`;
+  const html = `<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#1d2733">
+  <h2 style="color:#0b5cad;margin:0 0 8px">Prüferinnerung${grouping === 'monthly' && months.length ? ` – ${escHtml(months.join(', '))}` : ''}</h2>
+  <p>Folgende Geräte aus der Datenbank <b>${escHtml(dbName)}</b> sind zur Wiederholungsprüfung nach DIN VDE 0701-0702 fällig:</p>
+  ${sections.map(table).join('\n')}
   <p style="color:#5b6b7b;font-size:12px">Automatisch erstellt vom Secutest Prüfmanager.</p></div>`;
   return { subject, text, html };
 }

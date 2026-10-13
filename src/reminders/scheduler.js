@@ -8,15 +8,35 @@
  */
 const repo = require('../db/repo');
 const { sendMail, reminderContent, smtpConfigured, recipientsOf, fmtDate } = require('./mailer');
-const { buildCalendar } = require('./ics');
+const { buildCalendar, monthLabel } = require('./ics');
 
-/** Welche Erinnerungsarten sind für ein Gerät heute fällig (und noch nicht versendet)? */
+const usesMail = (r) => r.channel !== 'calendar';
+const usesCalendar = (r) => r.channel !== 'mail';
+const monthStart = (iso) => `${iso.slice(0, 7)}-01`;
+
+/**
+ * Welche Erinnerungsarten sind für ein Gerät heute fällig (und noch nicht versendet)?
+ *
+ * grouping 'due':     Erinnerung x Tage vor dem Fälligkeitstag, am Fälligkeitstag und bei Überfälligkeit
+ *                     alle n Tage – je Gerät zum eigenen Termin.
+ * grouping 'monthly': alle in einem Monat fälligen Geräte werden gemeinsam erinnert – x Tage vor dem
+ *                     Monatsersten bzw. am Monatsersten. Überfällige Geräte erscheinen einmal pro Monat
+ *                     (am Monatsersten) erneut in der Sammelerinnerung.
+ */
 function pendingKinds(sdb, device, settings, todayIso) {
   const r = settings.reminders;
   const days = repo.daysBetween(todayIso, device.next_due_date);
+  const before = [...(r.daysBefore || [])].map(Number).filter((x) => x > 0);
   const kinds = [];
-  if (days > 0) {
-    for (const d of [...(r.daysBefore || [])].map(Number).filter((x) => x > 0)) if (days <= d) kinds.push(`before-${d}`);
+  if (r.grouping === 'monthly') {
+    const daysToMonth = repo.daysBetween(todayIso, monthStart(device.next_due_date));
+    if (daysToMonth > 0) {
+      for (const d of before) if (daysToMonth <= d) kinds.push(`m-before-${d}`);
+    } else if (r.onDue) kinds.push('m-due');
+    // überfällig seit Beginn des aktuellen Monats → einmal je Monat in die Sammelerinnerung
+    if (r.overdueMonthly && device.next_due_date < monthStart(todayIso)) kinds.push(`m-overdue-${todayIso.slice(0, 7)}`);
+  } else if (days > 0) {
+    for (const d of before) if (days <= d) kinds.push(`before-${d}`);
   } else if (days === 0) {
     if (r.onDue) kinds.push('due');
   } else {
@@ -33,17 +53,47 @@ function pendingKinds(sdb, device, settings, todayIso) {
   return { days, kinds: kinds.filter((k) => !sent.has(k)) };
 }
 
+function calendarOptions(sdb, settings, extra = {}) {
+  return { dbUuid: sdb.getMeta('db_uuid'), dbName: sdb.getMeta('db_name'), alarmDays: settings.reminders.calendarAlarmDays, ownerName: settings.owner.name, grouping: settings.reminders.grouping, ...extra };
+}
+
+/** Alle Geräte, die im Kalender erscheinen sollen */
+function calendarDevices(sdb) {
+  return repo.listDevices(sdb, { status: 'alle-aktiven' }).filter((d) => d.next_due_date && d.reminder_enabled);
+}
+
+/**
+ * Kalenderdatei für die Oberfläche bzw. den Export. ids = nur diese Geräte;
+ * bei monatlicher Bündelung immer die vollständigen Monate der gewählten Geräte.
+ */
+function calendarFor(sdb, ids = [], { grouping } = {}) {
+  const settings = repo.getSettings(sdb);
+  const opts = calendarOptions(sdb, settings, grouping ? { grouping } : {});
+  let devices = calendarDevices(sdb);
+  if (ids.length) {
+    const wanted = new Set(ids);
+    if (opts.grouping === 'monthly') {
+      const months = new Set(devices.filter((d) => wanted.has(d.id)).map((d) => d.next_due_date.slice(0, 7)));
+      devices = devices.filter((d) => months.has(d.next_due_date.slice(0, 7)));
+    } else devices = devices.filter((d) => wanted.has(d.id));
+  }
+  return buildCalendar(devices, opts);
+}
+
 /**
  * @returns {{sent:boolean, count:number, devices:Array, error?:string, skipped?:string}}
  */
 async function runReminders(sdb, { dryRun = false, now = new Date() } = {}) {
   const settings = repo.getSettings(sdb);
-  if (!settings.reminders.enabled) return { sent: false, count: 0, devices: [], skipped: 'Erinnerungen sind deaktiviert.' };
+  const r = settings.reminders;
+  if (!r.enabled) return { sent: false, count: 0, devices: [], skipped: 'Erinnerungen sind deaktiviert.' };
+  if (!usesMail(r)) return { sent: false, count: 0, devices: [], skipped: 'Erinnerung nur per Kalender gewählt – es werden keine Erinnerungsmails versendet.' };
   if (!smtpConfigured(settings)) return { sent: false, count: 0, devices: [], skipped: 'SMTP ist nicht eingerichtet.' };
   const rcpt = recipientsOf(settings);
   if (!rcpt.length) return { sent: false, count: 0, devices: [], skipped: 'Kein Empfänger hinterlegt.' };
   const todayIso = repo.today(now);
-  const horizon = Math.max(0, ...(settings.reminders.daysBefore || []).map(Number));
+  // monatlich: Vorlauf bezieht sich auf den Monatsersten → bis zu 31 Tage weiter vorausschauen
+  const horizon = Math.max(0, ...(r.daysBefore || []).map(Number)) + (r.grouping === 'monthly' ? 31 : 0);
   const candidates = repo.dueDevices(sdb, horizon).filter((d) => d.reminder_enabled && d.status !== 'ausgemustert');
   const items = [];
   for (const device of candidates) {
@@ -54,14 +104,15 @@ async function runReminders(sdb, { dryRun = false, now = new Date() } = {}) {
   if (dryRun) return { sent: false, count: items.length, devices: items.map((i) => ({ id: i.device.id, name: i.device.name, days: i.days, kinds: i.kinds })) };
 
   const dbName = sdb.getMeta('db_name');
-  const content = reminderContent(dbName, items);
-  const ics = buildCalendar(
-    items.map((i) => i.device),
-    { dbUuid: sdb.getMeta('db_uuid'), dbName, alarmDays: settings.reminders.calendarAlarmDays, ownerName: settings.owner.name }
-  );
+  const content = reminderContent(dbName, items, { grouping: r.grouping });
+  const attachments = [];
+  if (usesCalendar(r)) {
+    const devices = r.grouping === 'monthly' ? calendarDevices(sdb).filter((d) => items.some((i) => i.device.next_due_date.slice(0, 7) === d.next_due_date.slice(0, 7))) : items.map((i) => i.device);
+    attachments.push({ filename: 'Prueftermine.ics', content: buildCalendar(devices, calendarOptions(sdb, settings)), contentType: 'text/calendar; charset=utf-8; method=PUBLISH' });
+  }
   const log = sdb.db.prepare('INSERT INTO reminder_log (device_id, due_date, kind, channel, recipient, ok, error) VALUES (?,?,?,?,?,?,?)');
   try {
-    const info = await sendMail(settings, { ...content, attachments: [{ filename: 'Pruftermine.ics', content: ics, contentType: 'text/calendar; charset=utf-8; method=PUBLISH' }] });
+    const info = await sendMail(settings, { ...content, attachments });
     sdb.db.transaction(() => {
       for (const i of items) for (const k of i.kinds) log.run(i.device.id, i.device.next_due_date, k, 'mail', info.to.join(', '), 1, null);
     })();
@@ -73,18 +124,56 @@ async function runReminders(sdb, { dryRun = false, now = new Date() } = {}) {
   }
 }
 
-/** Kalendereinladung für den nächsten Prüftermin eines Geräts per Mail senden */
-async function sendCalendarInvite(sdb, deviceId) {
+/**
+ * Aktualisierte Kalendertermine per Mail senden (nach Prüfung, Verschieben, Intervalländerung).
+ * previousDue: {deviceId: alterTermin} – bei monatlicher Bündelung werden auch die alten Monate
+ * aktualisiert bzw. abgesagt, wenn dort kein Gerät mehr fällig ist.
+ */
+async function sendCalendarUpdate(sdb, deviceIds, { previousDue = {} } = {}) {
   const settings = repo.getSettings(sdb);
-  const device = repo.getDevice(sdb, deviceId);
-  if (!device.next_due_date) throw new Error('Für dieses Gerät ist kein nächster Prüftermin eingetragen.');
+  const all = calendarDevices(sdb);
+  const ids = new Set(deviceIds.map(Number));
+  const changed = all.filter((d) => ids.has(d.id));
+  if (!changed.length) throw new Error('Für diese Geräte ist kein nächster Prüftermin eingetragen.');
   const dbName = sdb.getMeta('db_name');
-  const ics = buildCalendar([device], { dbUuid: sdb.getMeta('db_uuid'), dbName, alarmDays: settings.reminders.calendarAlarmDays, ownerName: settings.owner.name });
-  const subject = `Prüftermin ${fmtDate(device.next_due_date)}: ${device.name} (${device.inventory_no})`;
-  const text = `Im Anhang der Kalendertermin für die nächste Prüfung von „${device.name}“ (${device.inventory_no}).\nEinfach öffnen und in den Kalender übernehmen (Outlook, iCloud, Google …).`;
-  const info = await sendMail(settings, { subject, text, attachments: [{ filename: `Prueftermin_${device.inventory_no}.ics`, content: ics, contentType: 'text/calendar; charset=utf-8; method=PUBLISH' }] });
-  sdb.db.prepare('INSERT INTO reminder_log (device_id, due_date, kind, channel, recipient, ok) VALUES (?,?,?,?,?,1)').run(device.id, device.next_due_date, 'invite', 'calendar', info.to.join(', '));
+  let devices = changed;
+  let cancelMonths = [];
+  let subject;
+  if (settings.reminders.grouping === 'monthly') {
+    const months = new Set([...changed.map((d) => d.next_due_date.slice(0, 7)), ...Object.values(previousDue).filter(Boolean).map((x) => String(x).slice(0, 7))]);
+    devices = all.filter((d) => months.has(d.next_due_date.slice(0, 7)));
+    cancelMonths = [...months].filter((m) => !devices.some((d) => d.next_due_date.startsWith(m)));
+    subject = `Prüftermine ${[...months].sort().map(monthLabel).join(', ')} (${dbName})`;
+  } else {
+    subject = changed.length === 1 ? `Prüftermin ${fmtDate(changed[0].next_due_date)}: ${changed[0].name} (${changed[0].inventory_no})` : `${changed.length} Prüftermine aktualisiert (${dbName})`;
+  }
+  const ics = buildCalendar(devices, calendarOptions(sdb, settings, { cancelMonths }));
+  const text = `Im Anhang ${devices.length === 1 && !cancelMonths.length ? 'der Kalendertermin' : 'die Kalendertermine'} für die nächsten Prüfungen aus der Datenbank „${dbName}“.\nEinfach öffnen und in den Kalender übernehmen (Outlook, iCloud, Google …) – bereits übernommene Termine werden dabei aktualisiert.`;
+  const info = await sendMail(settings, { subject, text, attachments: [{ filename: 'Prueftermine.ics', content: ics, contentType: 'text/calendar; charset=utf-8; method=PUBLISH' }] });
+  const log = sdb.db.prepare('INSERT INTO reminder_log (device_id, due_date, kind, channel, recipient, ok) VALUES (?,?,?,?,?,1)');
+  for (const d of changed) log.run(d.id, d.next_due_date, 'invite', 'calendar', info.to.join(', '));
   return info;
+}
+
+/** Kalendereinladung für den nächsten Prüftermin eines Geräts per Mail senden */
+function sendCalendarInvite(sdb, deviceId) {
+  return sendCalendarUpdate(sdb, [deviceId]);
+}
+
+/** Automatisch aktualisierte Termine senden, wenn so eingestellt. Liefert null, wenn nicht vorgesehen. */
+async function autoCalendarUpdate(sdb, deviceIds, opts) {
+  const settings = repo.getSettings(sdb);
+  const r = settings.reminders;
+  if (!r.enabled || !usesCalendar(r) || !r.calendarInvite || !smtpConfigured(settings)) return null;
+  // nur Geräte, die überhaupt im Kalender stehen (Erinnerung an, Termin vorhanden, nicht ausgemustert)
+  const inCalendar = new Set(calendarDevices(sdb).map((d) => d.id));
+  deviceIds = deviceIds.filter((id) => inCalendar.has(Number(id)));
+  if (!deviceIds.length) return null;
+  try {
+    return { ok: true, ...(await sendCalendarUpdate(sdb, deviceIds, opts)) };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
 }
 
 class ReminderScheduler {
@@ -116,4 +205,4 @@ class ReminderScheduler {
   }
 }
 
-module.exports = { runReminders, sendCalendarInvite, ReminderScheduler, pendingKinds };
+module.exports = { runReminders, sendCalendarInvite, sendCalendarUpdate, autoCalendarUpdate, calendarFor, ReminderScheduler, pendingKinds, usesMail, usesCalendar };

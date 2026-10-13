@@ -1,5 +1,5 @@
 // Datenbank wählen, anlegen und anmelden (Passwort + Authenticator-Code)
-import { h, clear, toast, field, input, select, modal, fill } from '../ui.js';
+import { h, clear, toast, field, input, select, modal, fill, choices } from '../ui.js';
 import { get, post, del } from '../api.js';
 import { disclaimerContent } from '../disclaimer.js';
 import { shutdownApp } from '../shutdown.js';
@@ -41,6 +41,7 @@ export async function renderLogin(root, { message, onUnlocked }) {
           h('div', { class: 'grow' }, h('div', { style: { fontWeight: 700 } }, d.name), h('div', { class: 'path', title: d.path }, d.path)),
           !d.exists ? h('span', { class: 'badge bad', title: 'Cloud-Ordner noch nicht synchronisiert oder Datei verschoben?' }, 'Datei nicht gefunden') : null,
           d.lock ? h('span', { class: 'badge warn', title: `seit ${d.lock.since}` }, `geöffnet auf ${d.lock.host}`) : null,
+          d.exists && d.encrypted === false ? h('span', { class: 'badge muted', title: 'Datei ist nicht verschlüsselt – Passwort in den Einstellungen festlegbar' }, '🔓 ohne Passwort') : null,
           h('span', { class: 'badge info' }, PROVIDER_NAME[d.provider] || 'Lokal'),
           h(
             'button',
@@ -98,7 +99,7 @@ export async function renderLogin(root, { message, onUnlocked }) {
         { class: 'card' },
         h('div', { class: 'card-head' }, h('h2', {}, 'Datenbank öffnen'), h('div', { class: 'row' }, h('button', { class: 'btn', onclick: () => addExisting() }, 'Datei hinzufügen …'), h('button', { class: 'btn primary', onclick: () => showCreate(data) }, '+ Neue Datenbank'))),
         list,
-        h('p', { class: 'muted small', style: { marginTop: '12px' } }, 'Jede Datenbank ist eine eigene, verschlüsselte Datei (AES-256) – z. B. eine für deine eigenen Geräte und je eine für Bekannte. Anmeldung mit Passwort + Code aus deiner Authenticator-App (Bitwarden, Microsoft, Google …).')
+        h('p', { class: 'muted small', style: { marginTop: '12px' } }, 'Jede Datenbank ist eine eigene Datei – z. B. eine für deine eigenen Geräte und je eine für Bekannte. Sie kann lokal, in OneDrive/iCloud oder in einem eigenen Ordner liegen. Passwort (Verschlüsselung AES-256) und Zwei-Faktor-Code (Bitwarden, Microsoft, Google Authenticator …) sind empfohlen, aber freiwillig.')
       ),
       discovered,
       h('p', { class: 'small muted', style: { marginTop: '14px' } }, '⚠ Open-Source-Software ohne Gewähr. Prüfungen nur durch Elektrofachkräfte. ', h('a', { href: '#', onclick: (e) => (e.preventDefault(), showDisclaimer()) }, 'Haftungsausschluss lesen'), ' · ', h('a', { href: '#', onclick: (e) => (e.preventDefault(), shutdownApp()) }, '⏻ Programm beenden'))
@@ -126,47 +127,50 @@ export async function renderLogin(root, { message, onUnlocked }) {
 
   // ---------------- Anmelden ----------------
   function showUnlock(d, force = false) {
+    const needsPassword = d.encrypted !== false;
     const pw = input({ type: 'password', autocomplete: 'current-password', placeholder: 'Passwort' });
     const err = h('div');
-    const btn = h('button', { class: 'btn primary', type: 'submit' }, 'Weiter');
+    const btn = h('button', { class: 'btn primary', type: 'submit' }, needsPassword ? 'Weiter' : 'Öffnen');
+    const submit = async () => {
+      clear(err);
+      btn.disabled = true;
+      try {
+        const r = await post('/unlock', { dbId: d.id, password: needsPassword ? pw.value : '', force });
+        if (r.unlocked) onUnlocked();
+        else showTotp(d, r.pendingToken);
+      } catch (ex) {
+        if (ex.status === 423) {
+          clear(err).appendChild(
+            h(
+              'div',
+              { class: 'alert warn' },
+              h('b', {}, 'Achtung:'),
+              ex.message,
+              h('p', { class: 'small', style: { marginTop: '6px' } }, 'Wenn du sicher bist, dass die Datenbank dort nicht mehr geöffnet ist (z. B. Rechner abgestürzt), kannst du trotzdem öffnen.'),
+              h('button', { type: 'button', class: 'btn sm', onclick: () => showUnlock(d, true) }, 'Trotzdem öffnen')
+            )
+          );
+        } else if (ex.data?.code === 'PASSWORD_REQUIRED' && !needsPassword) {
+          // Datei wurde inzwischen (z. B. auf einem anderen Rechner) verschlüsselt
+          showUnlock({ ...d, encrypted: true }, force);
+        } else clear(err).appendChild(h('div', { class: 'alert bad' }, ex.message));
+      } finally {
+        btn.disabled = false;
+      }
+    };
     const form = h(
       'form',
-      {
-        class: 'card stack',
-        onsubmit: async (e) => {
-          e.preventDefault();
-          clear(err);
-          btn.disabled = true;
-          try {
-            const r = await post('/unlock', { dbId: d.id, password: pw.value, force });
-            showTotp(d, r.pendingToken);
-          } catch (ex) {
-            if (ex.status === 423) {
-              clear(err).appendChild(
-                h(
-                  'div',
-                  { class: 'alert warn' },
-                  h('b', {}, 'Achtung:'),
-                  ex.message,
-                  h('p', { class: 'small', style: { marginTop: '6px' } }, 'Wenn du sicher bist, dass die Datenbank dort nicht mehr geöffnet ist (z. B. Rechner abgestürzt), kannst du trotzdem öffnen.'),
-                  h('button', { type: 'button', class: 'btn sm', onclick: () => showUnlock(d, true) }, 'Trotzdem öffnen')
-                )
-              );
-            } else clear(err).appendChild(h('div', { class: 'alert bad' }, ex.message));
-          } finally {
-            btn.disabled = false;
-          }
-        },
-      },
-      h('h2', {}, `🔐 ${d.name}`),
+      { class: 'card stack', onsubmit: (e) => (e.preventDefault(), submit()) },
+      h('h2', {}, `${needsPassword ? '🔐' : '🔓'} ${d.name}`),
       h('div', { class: 'muted small' }, d.path),
       force ? h('div', { class: 'alert warn' }, 'Öffnen trotz Sperre eines anderen Rechners.') : null,
-      field('Passwort', pw),
+      needsPassword ? field('Passwort', pw) : h('div', { class: 'alert info small' }, 'Diese Datenbank ist nicht mit einem Passwort geschützt. Ein Passwort (Verschlüsselung) und die Zwei-Faktor-Anmeldung lassen sich jederzeit unter Einstellungen → Sicherheit & Speicherort einschalten.'),
       err,
       h('div', { class: 'row between' }, h('button', { type: 'button', class: 'btn ghost', onclick: () => showList() }, '← Zurück'), btn)
     );
     fill(box, hero, form);
-    pw.focus();
+    if (needsPassword) pw.focus();
+    else if (!force) submit(); // ohne Passwort direkt öffnen (2FA folgt, falls eingerichtet)
   }
 
   function showTotp(d, pendingToken) {
@@ -216,11 +220,15 @@ export async function renderLogin(root, { message, onUnlocked }) {
 
   // ---------------- Neue Datenbank ----------------
   function showCreate(data) {
-    const locs = [...data.cloud.map((c) => ({ value: c.folder, label: `${PROVIDER_ICON[c.provider]} ${c.label} – ${c.folder}` })), { value: data.local, label: `💻 Lokal – ${data.local}` }, { value: '__custom', label: '📁 Eigener Ordner …' }];
+    // Speicherort: Cloud-Ordner (falls gefunden), nur lokal, eigener Ordner
+    const locOptions = [
+      ...data.cloud.map((c) => ({ value: c.folder, icon: PROVIDER_ICON[c.provider], title: c.label, text: `Wird automatisch auf deine anderen Geräte synchronisiert. ${c.folder}` })),
+      { value: data.local, icon: '💻', title: 'Nur auf diesem Rechner (lokal)', text: `Keine Cloud. Ordner: ${data.local}` },
+      { value: '__custom', icon: '📁', title: 'Eigener Ordner …', text: 'z. B. USB-Stick, NAS, Nextcloud/Dropbox-Ordner' },
+    ];
+    const custom = input({ placeholder: 'Absoluter Ordnerpfad, z. B. D:\\Pruefungen oder /Volumes/USB/Pruefungen', style: { display: 'none' } });
+    const loc = choices(locOptions, locOptions[0].value, { cols: Math.min(3, locOptions.length), onchange: (v) => (custom.style.display = v === '__custom' ? '' : 'none') });
     const name = input({ placeholder: 'z. B. Meine Geräte, Familie Müller, Werkstatt', required: true });
-    const loc = select(locs, locs[0].value);
-    const custom = input({ placeholder: 'Absoluter Ordnerpfad', style: { display: 'none' } });
-    loc.addEventListener('change', () => (custom.style.display = loc.value === '__custom' ? '' : 'none'));
     const ownerName = input({ placeholder: 'Name des Eigentümers / Kunden' });
     const ownerEmail = input({ type: 'email', placeholder: 'für Prüferinnerungen (optional)' });
     const ownerStreet = input({ placeholder: 'Straße, Nr.' });
@@ -241,6 +249,31 @@ export async function renderLogin(root, { message, onUnlocked }) {
       if (/[^A-Za-z0-9]/.test(v)) score++;
       meter.textContent = v ? `Stärke: ${['sehr schwach', 'schwach', 'mittel', 'gut', 'stark', 'sehr stark'][score]}` : '';
     });
+    const pwFields = h('div', { class: 'stack' }, h('div', { class: 'grid c2' }, field('Passwort (mind. 8 Zeichen)', pw1, null, { required: true }), field('Passwort wiederholen', pw2, null, { required: true })), meter, h('div', { class: 'alert warn small' }, h('b', {}, 'Wichtig:'), 'Ohne Passwort lässt sich eine verschlüsselte Datenbank nicht wiederherstellen. Bewahre es z. B. in Bitwarden auf.'));
+    const noPwHint = h('div', { class: 'alert warn small', style: { display: 'none' } }, h('b', {}, 'Ohne Passwort:'), 'Die Datei wird nicht verschlüsselt. Wer Zugriff auf die Datei hat (Rechner, Cloud, USB-Stick), kann alle Daten lesen. Ein Passwort kannst du später in den Einstellungen festlegen.');
+    const usePw = choices(
+      [
+        { value: 'yes', icon: '🔐', title: 'Mit Passwort verschlüsseln (empfohlen)', text: 'AES-256 – die Datei ist ohne Passwort unlesbar.' },
+        { value: 'no', icon: '🔓', title: 'Ohne Passwort', text: 'Bequem, aber ungeschützt. Später jederzeit änderbar.' },
+      ],
+      'yes',
+      { onchange: (v) => ((pwFields.style.display = v === 'yes' ? '' : 'none'), (noPwHint.style.display = v === 'yes' ? 'none' : '')) }
+    );
+    const use2fa = choices(
+      [
+        { value: 'yes', icon: '📱', title: 'Mit Zwei-Faktor-Anmeldung (empfohlen)', text: 'Zusätzlich ein Code aus der Authenticator-App (Bitwarden, Microsoft, Google …).' },
+        { value: 'no', icon: '➖', title: 'Ohne Zwei-Faktor-Anmeldung', text: 'Später in den Einstellungen einschaltbar.' },
+      ],
+      'yes',
+      { onchange: () => renderSteps() }
+    );
+    const steps = h('div', { class: 'steps-mini' });
+    const submitBtn = h('button', { class: 'btn primary', type: 'submit' });
+    const renderSteps = () => {
+      fill(steps, h('span', { class: 'on' }), use2fa.value === 'yes' ? [h('span'), h('span')] : null);
+      submitBtn.textContent = use2fa.value === 'yes' ? 'Weiter zur Zwei-Faktor-Einrichtung →' : 'Datenbank anlegen';
+    };
+    renderSteps();
     const err = h('div');
     const form = h(
       'form',
@@ -249,30 +282,38 @@ export async function renderLogin(root, { message, onUnlocked }) {
         onsubmit: async (e) => {
           e.preventDefault();
           clear(err);
+          const withPw = usePw.value === 'yes';
           try {
             const r = await post('/setup/begin', {
               name: name.value,
               folder: loc.value === '__custom' ? custom.value : loc.value,
-              password: pw1.value,
-              password2: pw2.value,
+              usePassword: withPw,
+              twoFactor: use2fa.value === 'yes',
+              password: withPw ? pw1.value : null,
+              password2: withPw ? pw2.value : null,
               owner: { name: ownerName.value, email: ownerEmail.value, street: ownerStreet.value, city: ownerCity.value },
               inspector: { name: inspName.value, qualification: inspQual.value },
               intervalMonths: Number(interval.value),
             });
-            showSetup2fa(r, name.value);
+            if (r.created) {
+              toast(`Datenbank „${name.value}“ angelegt`, 'ok');
+              onUnlocked();
+            } else showSetup2fa(r, name.value);
           } catch (ex) {
             clear(err).appendChild(h('div', { class: 'alert bad' }, ex.message));
           }
         },
       },
-      h('div', { class: 'steps-mini' }, h('span', { class: 'on' }), h('span'), h('span')),
+      steps,
       h('h2', {}, 'Neue Datenbank anlegen'),
-      h('div', { class: 'grid c2' }, field('Name der Datenbank', name, 'Für Bekannte einfach je eine eigene Datenbank anlegen.', { required: true }), field('Speicherort', h('div', { class: 'stack' }, loc, custom), data.cloud.length ? 'OneDrive/iCloud gefunden – die Datei wird dort automatisch synchronisiert.' : 'Kein OneDrive/iCloud gefunden – lokalen oder eigenen Ordner wählen.')),
+      field('Name der Datenbank', name, 'Für Bekannte einfach je eine eigene Datenbank anlegen.', { required: true }),
+      h('fieldset', {}, h('legend', {}, 'Speicherort'), loc, custom, h('p', { class: 'small muted' }, data.cloud.length ? 'OneDrive/iCloud gefunden. Der Speicherort lässt sich später in den Einstellungen ändern (Datenbank verschieben).' : 'Kein OneDrive/iCloud gefunden – die Datenbank liegt lokal oder in einem eigenen Ordner. Verschieben ist später jederzeit möglich.')),
       h('fieldset', {}, h('legend', {}, 'Eigentümer / Kunde'), h('div', { class: 'grid c2' }, field('Name', ownerName), field('E-Mail', ownerEmail), field('Straße', ownerStreet), field('PLZ / Ort', ownerCity))),
       h('fieldset', {}, h('legend', {}, 'Prüfer'), h('div', { class: 'grid c3' }, field('Name', inspName), field('Qualifikation', inspQual), field('Standard-Prüfintervall', interval))),
-      h('fieldset', {}, h('legend', {}, 'Passwort (verschlüsselt die Datei)'), h('div', { class: 'grid c2' }, field('Passwort (mind. 8 Zeichen)', pw1, null, { required: true }), field('Passwort wiederholen', pw2, null, { required: true })), meter, h('div', { class: 'alert warn small' }, h('b', {}, 'Wichtig:'), 'Ohne Passwort lässt sich die Datenbank nicht wiederherstellen. Bewahre es z. B. in Bitwarden auf.')),
+      h('fieldset', {}, h('legend', {}, 'Passwort (optional)'), usePw, pwFields, noPwHint),
+      h('fieldset', {}, h('legend', {}, 'Zwei-Faktor-Anmeldung (optional)'), use2fa),
       err,
-      h('div', { class: 'row between' }, h('button', { type: 'button', class: 'btn ghost', onclick: () => showList() }, '← Zurück'), h('button', { class: 'btn primary', type: 'submit' }, 'Weiter zur Zwei-Faktor-Einrichtung →'))
+      h('div', { class: 'row between' }, h('button', { type: 'button', class: 'btn ghost', onclick: () => showList() }, '← Zurück'), submitBtn)
     );
     fill(box, hero, form);
     name.focus();

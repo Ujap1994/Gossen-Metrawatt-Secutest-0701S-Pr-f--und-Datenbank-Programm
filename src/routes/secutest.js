@@ -38,6 +38,7 @@ module.exports = function secutestRoutes(manager) {
     if ('timeoutMs' in b) patch.timeoutMs = Math.max(300, Math.min(20000, parseInt(b.timeoutMs, 10) || 2500));
     if ('softwareMains' in b) patch.softwareMains = !!b.softwareMains;
     if ('autoConnect' in b) patch.autoConnect = !!b.autoConnect;
+    if ('terminal' in b) patch.terminal = !!b.terminal;
     if (b.switchPositions && typeof b.switchPositions === 'object') {
       patch.switchPositions = {};
       for (const [k, v] of Object.entries(b.switchPositions)) {
@@ -53,8 +54,9 @@ module.exports = function secutestRoutes(manager) {
     res.json(await d().identify());
   });
 
-  /** Terminal: beliebigen Befehl senden */
+  /** Terminal: beliebigen Befehl senden (nur wenn das Terminal in den Einstellungen eingeschaltet ist) */
   r.post('/command', async (req, res) => {
+    if (manager.cfg().terminal === false) throw Object.assign(new Error('Das RS-232-Terminal ist in den Einstellungen ausgeschaltet.'), { status: 403, code: 'TERMINAL_OFF' });
     need();
     const cmd = String(req.body?.command || '').trim();
     if (!cmd) throw Object.assign(new Error('Befehl fehlt'), { status: 400 });

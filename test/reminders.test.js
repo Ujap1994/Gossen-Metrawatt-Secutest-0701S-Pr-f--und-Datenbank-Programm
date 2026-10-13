@@ -41,3 +41,38 @@ test('Erinnerungslogik: Schwellen, Fälligkeit, keine Doppelversendung', async (
   assert.equal(dry.count, 1);
   db.close();
 });
+
+test('Monatlich gebündelt: Vorlauf zum Monatsersten, Überfällige einmal pro Monat', () => {
+  const db = createDatabase(path.join(dir, 'monat.secudb'), null, { name: 'Monat' });
+  repo.updateSettings(db, { reminders: { grouping: 'monthly', daysBefore: [7] } });
+  const settings = repo.getSettings(db);
+  const d = repo.getDevice(db, repo.createDevice(db, { name: 'Bohrmaschine', next_due_date: '2026-11-20' }).id);
+  assert.deepEqual(pendingKinds(db, d, settings, '2026-10-20').kinds, [], '12 Tage vor dem Monatsersten');
+  assert.deepEqual(pendingKinds(db, d, settings, '2026-10-26').kinds, ['m-before-7']);
+  assert.deepEqual(pendingKinds(db, d, settings, '2026-11-01').kinds, ['m-due'], 'Monatsübersicht am Monatsersten');
+  assert.deepEqual(pendingKinds(db, d, settings, '2026-11-25').kinds, ['m-due'], 'erst ab dem Folgemonat als überfällig gebündelt');
+  assert.deepEqual(pendingKinds(db, d, settings, '2026-12-01').kinds, ['m-due', 'm-overdue-2026-12']);
+  db.db.prepare("INSERT INTO reminder_log (device_id, due_date, kind, channel, ok) VALUES (?,?,?,?,1)").run(d.id, d.next_due_date, 'm-overdue-2026-12', 'mail');
+  assert.deepEqual(pendingKinds(db, d, settings, '2026-12-15').kinds, ['m-due']);
+  db.close();
+});
+
+test('Kanal „Kalender“: keine Erinnerungsmails, Kalender monatlich als Sammeltermin', async () => {
+  const db = createDatabase(path.join(dir, 'kal.secudb'), null, { name: 'Kal' });
+  repo.updateSettings(db, { reminders: { enabled: true, channel: 'calendar', recipients: 'a@example.org', smtp: { host: 'localhost', from: 'a@example.org' } } });
+  assert.match((await runReminders(db)).skipped, /Kalender/);
+  const devs = [
+    { id: 1, name: 'A', inventory_no: 'G-1', protection_class: 'SK I', next_due_date: '2027-02-03' },
+    { id: 2, name: 'B', inventory_no: 'G-2', protection_class: 'SK II', next_due_date: '2027-02-27' },
+    { id: 3, name: 'C', inventory_no: 'G-3', protection_class: 'SK I', next_due_date: '2027-03-10' },
+  ];
+  const ics = buildCalendar(devs, { dbUuid: 'u', grouping: 'monthly', cancelMonths: ['2027-01'] });
+  assert.equal((ics.match(/BEGIN:VEVENT/g) || []).length, 3, 'Februar, März, abgesagter Januar');
+  assert.match(ics, /UID:u-monat-2027-02@secutest-pruefmanager/);
+  assert.match(ics, /DTSTART;VALUE=DATE:20270201/);
+  assert.match(ics, /SUMMARY:Geräteprüfungen Februar 2027: 2 Geräte/);
+  assert.match(ics, /STATUS:CANCELLED/);
+  const per = buildCalendar(devs.slice(0, 1), { dbUuid: 'u' });
+  assert.match(per, /UID:u-geraet-1@secutest-pruefmanager/, 'stabile UID je Gerät → Verschieben aktualisiert den Termin');
+  db.close();
+});

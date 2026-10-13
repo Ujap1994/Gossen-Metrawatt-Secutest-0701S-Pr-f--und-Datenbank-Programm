@@ -2,6 +2,12 @@
 import { h, clear, fmt, toast, field, input, select, datalist, dueBadge, resultBadge, skSymbol, STATUS_LABEL, confirmDialog, modal, debounce, add, fill } from '../ui.js';
 import { get, post, put, del } from '../api.js';
 import { state, loadMeta, procName, deviceTypeLabel, actionLabel } from '../state.js';
+import { postponeDialog, intervalDialog, INTERVAL_PRESETS } from '../duedialogs.js';
+
+/** Hinweis „verschoben“ neben dem Fälligkeitsdatum */
+function postponedBadge(d) {
+  return d.postponed_from ? h('span', { class: 'badge postponed', title: `ursprünglich fällig am ${fmt.date(d.postponed_from)}${d.postpone_count > 1 ? ` · ${d.postpone_count}× verschoben` : ''}` }, '⏭ verschoben') : null;
+}
 
 // ---------------------------------------------------------------------------
 // Liste
@@ -11,10 +17,11 @@ export async function renderDeviceList({ params, navigate }) {
   const tableBox = h('div', { class: 'table-wrap' });
   const selected = new Set();
   const bulk = h('div', { class: 'row' });
+  let devices = [];
 
   const load = async () => {
     const qs = new URLSearchParams(Object.entries(filters).filter(([, v]) => v));
-    const devices = await get(`/devices?${qs}`);
+    devices = await get(`/devices?${qs}`);
     selected.clear();
     renderBulk();
     clear(tableBox).appendChild(
@@ -36,7 +43,7 @@ export async function renderDeviceList({ params, navigate }) {
                   h('td', {}, skSymbol(d.protection_class, 18)),
                   h('td', {}, d.location || '—'),
                   h('td', {}, fmt.date(d.last_inspection_date), ' ', d.last_inspection_date ? resultBadge(d.last_result) : null),
-                  h('td', {}, dueBadge(d)),
+                  h('td', {}, dueBadge(d), ' ', postponedBadge(d)),
                   h('td', {}, h('a', { class: 'btn sm', href: `#/inspect?device=${d.id}`, onclick: (e) => e.stopPropagation() }, 'Prüfen'))
                 )
               )
@@ -49,7 +56,15 @@ export async function renderDeviceList({ params, navigate }) {
     clear(bulk);
     if (!selected.size) return;
     const ids = [...selected].join(',');
-    add(bulk, h('span', { class: 'muted' }, `${selected.size} ausgewählt:`), h('a', { class: 'btn sm', href: `/api/labels?ids=${ids}`, target: '_blank' }, '🏷 Plaketten'), h('a', { class: 'btn sm', href: `/api/calendar.ics?ids=${ids}` }, '📅 Kalender'));
+    const chosen = () => devices.filter((d) => selected.has(d.id));
+    add(
+      bulk,
+      h('span', { class: 'muted' }, `${selected.size} ausgewählt:`),
+      h('button', { class: 'btn sm', title: 'Prüftermin auf den nächsten Monat oder ein Datum verschieben', onclick: async () => (await postponeDialog(chosen())) && load() }, '⏭ Termin verschieben'),
+      h('button', { class: 'btn sm', title: 'Prüfintervall dieser Geräte ändern', onclick: async () => (await intervalDialog(chosen())) && load() }, '⏱ Prüfintervall ändern'),
+      h('a', { class: 'btn sm', href: `/api/labels?ids=${ids}`, target: '_blank' }, '🏷 Plaketten'),
+      h('a', { class: 'btn sm', href: `/api/calendar.ics?ids=${ids}` }, '📅 Kalender')
+    );
   }
 
   const search = input({ placeholder: '🔍 Suchen (Name, Inv.-Nr., Hersteller, Standort …)', value: filters.q, oninput: debounce((e) => ((filters.q = e.target.value), load()), 250) });
@@ -81,14 +96,6 @@ export async function renderDeviceList({ params, navigate }) {
 // ---------------------------------------------------------------------------
 // Formular
 // ---------------------------------------------------------------------------
-const INTERVAL_PRESETS = [
-  [3, '3 Monate (Baustelle, starke Beanspruchung)'],
-  [6, '6 Monate (Werkstatt, häufiger Gebrauch)'],
-  [12, '12 Monate (Standard / privat)'],
-  [24, '24 Monate (Büro, geringe Beanspruchung)'],
-  [36, '36 Monate'],
-  [48, '48 Monate'],
-];
 
 export async function renderDeviceForm({ args, params, navigate }) {
   const id = args[0] ? Number(args[0]) : null;
@@ -196,16 +203,8 @@ export async function renderDeviceDetail({ args, navigate }) {
   const meta = state.meta;
   const kv = (k, v) => [h('dt', {}, k), h('dd', {}, v ?? '—')];
 
-  const changeInterval = async () => {
-    const sel = select(INTERVAL_PRESETS, d.interval_months);
-    const custom = input({ type: 'number', min: 1, max: 120, value: d.interval_months });
-    sel.addEventListener('change', () => (custom.value = sel.value));
-    const r = await modal({ title: 'Prüfintervall ändern', body: h('div', { class: 'stack' }, field('Vorschlag', sel), field('Monate', custom), h('p', { class: 'small muted' }, 'Der nächste Termin wird ab der letzten bestandenen Prüfung neu berechnet.')), actions: [{ label: 'Abbrechen', value: null }, { label: 'Übernehmen', class: 'primary', onClick: () => Number(custom.value) }] });
-    if (!r) return;
-    await put(`/devices/${id}`, { interval_months: r });
-    toast('Intervall geändert', 'ok');
-    navigate(`#/devices/${id}`);
-  };
+  const changeInterval = async () => (await intervalDialog([d])) && navigate(`#/devices/${id}`);
+  const postpone = async () => (await postponeDialog([d])) && navigate(`#/devices/${id}`);
 
   const changeStatus = async () => {
     const sel = select(Object.entries(STATUS_LABEL), d.status);
@@ -262,7 +261,7 @@ export async function renderDeviceDetail({ args, navigate }) {
         'div',
         { class: 'card' },
         h('h2', {}, 'Prüfstatus'),
-        h('dl', { class: 'kv' }, kv('Letzte Prüfung', d.last_inspection_date ? h('span', {}, fmt.date(d.last_inspection_date), ' ', resultBadge(d.last_result)) : resultBadge(null)), kv('Nächste Prüfung', dueBadge(d)), kv('Prüfintervall', h('span', {}, `${d.interval_months} Monate `, h('button', { class: 'btn sm', onclick: changeInterval }, 'ändern'))), kv('Status', h('span', {}, STATUS_LABEL[d.status], ' ', h('button', { class: 'btn sm', onclick: changeStatus }, 'ändern'))), kv('Erinnerung', d.reminder_enabled ? 'aktiv' : 'aus')),
+        h('dl', { class: 'kv' }, kv('Letzte Prüfung', d.last_inspection_date ? h('span', {}, fmt.date(d.last_inspection_date), ' ', resultBadge(d.last_result)) : resultBadge(null)), kv('Nächste Prüfung', h('span', {}, dueBadge(d), ' ', postponedBadge(d), d.next_due_date && d.status !== 'ausgemustert' ? h('button', { class: 'btn sm', onclick: postpone, title: 'Prüftermin verschieben' }, 'verschieben') : null, d.postponed_from ? h('div', { class: 'small muted' }, `ursprünglich fällig am ${fmt.date(d.postponed_from)}`) : null)), kv('Prüfintervall', h('span', {}, `${d.interval_months} Monate `, h('button', { class: 'btn sm', onclick: changeInterval }, 'ändern'))), kv('Status', h('span', {}, STATUS_LABEL[d.status], ' ', h('button', { class: 'btn sm', onclick: changeStatus }, 'ändern'))), kv('Erinnerung', d.reminder_enabled ? 'aktiv' : 'aus')),
         h('div', { class: 'row', style: { marginTop: '12px' } }, h('a', { class: 'btn sm', href: `/api/calendar.ics?ids=${id}` }, '📅 Termin (.ics)'), meta.settings.reminders.smtp.host ? h('button', { class: 'btn sm', onclick: invite }, '✉️ Kalendereinladung mailen') : null, h('a', { class: 'btn sm', href: `/api/labels?ids=${id}`, target: '_blank' }, '🏷 Prüfplakette'))
       )
     ),
@@ -291,7 +290,7 @@ export async function renderDeviceDetail({ args, navigate }) {
               )
             )
           )
-        : h('div', { class: 'muted small' }, 'Z. B. Foto vom Typschild, vom Gerät oder von Mängeln. Wird verschlüsselt in der Datenbank gespeichert.')
+        : h('div', { class: 'muted small' }, 'Z. B. Foto vom Typschild, vom Gerät oder von Mängeln. Wird in der Datenbank gespeichert (verschlüsselt, sofern ein Passwort gesetzt ist).')
     )
   );
 }

@@ -45,16 +45,16 @@ Es geht auch **ganz ohne Prüfgerät**: Messwerte lassen sich von Hand eintragen
 |---|---|
 | **Prüfen nach VDE 0701/0702** | Fertige Abläufe für **AUTO** (automatische SK-I/SK-II-Erkennung), **SK I**, **SK II**, **SK III**, **T 240** (EDV/Büro), **Verlängerungsleitungen** (Adapter EL1) und **Festanschluss** (Einzelmessungen) |
 | **Auto-Modus-Schutz** | Sperrt den AUTO-Modus automatisch bei **EDV-/Bürogeräten** (Monitor, PC, Drucker …), **SK III**, Leitungen und Festanschluss und schlägt den richtigen Ablauf vor. Das entspricht der Bedienungsanleitung, Kap. 5.2 |
-| **RS-232-Steuerung** | Gerätegeführt mit Live-Anzeige und Ergebnis-Übernahme (`PRO?`) oder PC-gesteuert (`MES!`/`WER?`). Dazu Fernbedienung, Terminal und Protokollmitschnitt |
+| **RS-232-Steuerung** | Gerätegeführt mit Live-Anzeige und Ergebnis-Übernahme (`PRO?`) oder PC-gesteuert (`MES!`/`WER?`). Dazu Fernbedienung, Terminal (in den Einstellungen abschaltbar) und Protokollmitschnitt |
 | **Auto-Ping & Hot-Plug** | Findet das SECUTEST automatisch an jedem USB-RS232-Adapter unter Windows, macOS und Linux |
 | **Manueller Betrieb** | Geräte anlegen, prüfen und bearbeiten **ohne** Prüfgerät, auf Wunsch mit Gebrauchsfehler-Korrektur der Anzeigewerte |
 | **Grafische Anleitung** | Zu jedem Prüfschritt eine animierte Skizze: Drehschalterstellung, Prüfdose, Sonde, Messpunkt und Handgriff (Leitung bewegen, Stecker drehen …) |
 | **Bewertung** | Automatisch nach **aktueller Norm** (DIN VDE 0701-0702:2008, DIN EN 50678/50699) oder nach den **Gerätegrenzwerten von 1997**. Weicht die Bewertung des SECUTEST ab, zeigt das Programm einen Hinweis |
 | **Maßnahmen** | Ist ein Gerät durchgefallen, wählst du aus einer Liste, wie es weitergeht (sperren, reparieren, Leitung tauschen, ausmustern …). Der Gerätestatus wird automatisch gesetzt |
-| **Datenbank** | SQLite, verschlüsselt mit **SQLCipher (AES-256)**. Liegt direkt in **OneDrive** oder **iCloud Drive**. Beliebig viele, voneinander getrennte Datenbanken, z. B. für Bekannte |
-| **Anmeldung** | Passwort plus **Zwei-Faktor-Code (TOTP)** aus Bitwarden, Microsoft oder Google Authenticator, Aegis, 2FAS …, dazu Wiederherstellungscodes und automatische Sperre bei Inaktivität |
-| **Prüftermine** | Prüfdatum wird automatisch eingetragen und der nächste Termin aus dem Prüfintervall berechnet. Intervall pro Gerät änderbar |
-| **Erinnerungen** | E-Mail (SMTP) vor und bei Fälligkeit, **Kalendereinladung (.ics)** nach jeder Prüfung sowie Export aller Termine |
+| **Datenbank** | SQLite, auf Wunsch verschlüsselt mit **SQLCipher (AES-256)**. Liegt **lokal**, in **OneDrive**, **iCloud Drive** oder einem eigenen Ordner und lässt sich jederzeit **verschieben**. Beliebig viele, voneinander getrennte Datenbanken, z. B. für Bekannte |
+| **Anmeldung** | **Passwort** und **Zwei-Faktor-Code (TOTP)** aus Bitwarden, Microsoft oder Google Authenticator, Aegis, 2FAS … – beides **optional** und jederzeit in den Einstellungen ein- und ausschaltbar. Dazu Wiederherstellungscodes und automatische Sperre bei Inaktivität |
+| **Prüftermine** | Prüfdatum wird automatisch eingetragen und der nächste Termin aus dem Prüfintervall berechnet. Fällige Prüfungen lassen sich **auf den nächsten Monat verschieben**, das **Prüfintervall** wird je Gerät gespeichert – auch für mehrere Geräte auf einmal |
+| **Erinnerungen** | Wahlweise per **E-Mail**, per **Kalender** oder beides – **zum Fälligkeitstermin je Gerät** oder **monatsweise gebündelt**. Kalendertermine (.ics) mit Alarm, automatische Kalendereinladungen nach Änderungen |
 | **Dokumentation** | Druckfertiges **Prüfprotokoll** (PDF über den Browser), **Prüfplaketten mit QR-Code**, Fotos und PDFs pro Gerät, Änderungsprotokoll, Export als CSV und JSON |
 | **Plattformen** | Windows (x64, ARM64), macOS (Universal, Apple Silicon, Intel), Linux als .deb, .rpm, Arch, Alpine (.apk), Snap, Flatpak, AppImage und tar.gz (x64, ARM64, auch musl). Mit integriertem Node.js (Alpine/musl: Node.js der Distribution) |
 
@@ -166,11 +166,17 @@ Beim ersten Start zeigt das Programm den Sicherheitshinweis. Er muss einmal best
 
 ### 2. Datenbank anlegen
 
-Unter **„+ Neue Datenbank“** vergibst du einen Namen, z. B. *Meine Geräte* oder *Familie Beispiel*, und wählst den Speicherort. Gefundene **OneDrive**- und **iCloud-Drive**-Ordner stehen direkt zur Auswahl (Unterordner `SecutestPruefmanager`). Dazu kommen Eigentümer, Prüfer, Standard-Prüfintervall und ein **Passwort**. Das Passwort verschlüsselt die Datei, ohne es ist sie nicht wiederherstellbar.
+Unter **„+ Neue Datenbank“** vergibst du einen Namen, z. B. *Meine Geräte* oder *Familie Beispiel*, und wählst den Speicherort:
 
-<img src="docs/images/03-neue-datenbank.png" alt="Neue Datenbank" width="700">
+* **OneDrive / iCloud Drive** (falls gefunden, Unterordner `SecutestPruefmanager`) – die Datei ist automatisch auf allen deinen Rechnern verfügbar,
+* **Nur auf diesem Rechner (lokal)** – Ordner `Dokumente/SecutestPruefmanager`,
+* **Eigener Ordner** – z. B. USB-Stick, NAS, Nextcloud- oder Dropbox-Ordner.
 
-### 3. Zwei-Faktor-Anmeldung einrichten
+Dazu kommen Eigentümer, Prüfer und Standard-Prüfintervall. **Passwort und Zwei-Faktor-Anmeldung sind empfohlen, aber freiwillig.** Mit Passwort wird die Datei verschlüsselt; ohne Passwort ist sie nicht wiederherstellbar. Ohne Passwort bleibt die Datei lesbar für jeden, der Zugriff darauf hat. Beides lässt sich später unter *Einstellungen → Sicherheit & Speicherort* ein- und ausschalten.
+
+<img src="docs/images/60-neue-datenbank-optional.png" alt="Neue Datenbank – Speicherort, Passwort und 2FA optional" width="700">
+
+### 3. Zwei-Faktor-Anmeldung einrichten (optional)
 
 Scanne den QR-Code mit deiner Authenticator-App, z. B. **Bitwarden Authenticator**, Microsoft Authenticator, Google Authenticator, Aegis oder 2FAS, und gib den 6-stelligen Code ein. Erst dann wird die Datenbank angelegt. Bewahre die **10 Wiederherstellungscodes** sicher auf, z. B. in Bitwarden. Damit kommst du auch ohne Handy an die Daten.
 
@@ -180,7 +186,7 @@ Scanne den QR-Code mit deiner Authenticator-App, z. B. **Bitwarden Authenticator
 
 ### 4. Anmelden
 
-Datenbank wählen, Passwort eingeben, dann den Code aus der App.
+Datenbank wählen, Passwort eingeben, dann den Code aus der App. Ohne Passwort und ohne 2FA öffnet ein Klick die Datenbank direkt; sie ist in der Liste mit **🔓 ohne Passwort** gekennzeichnet.
 
 <img src="docs/images/02-datenbank-auswahl.png" alt="Datenbank-Auswahl" width="49%"> <img src="docs/images/05-anmeldung-2fa.png" alt="2FA-Anmeldung" width="49%">
 
@@ -207,7 +213,11 @@ Pflichtangaben sind nur Bezeichnung und Schutzklasse, die Inventarnummer wird au
 
 Die Seite **SECUTEST** zeigt Status und Geräte-Identität. Dazu kommen ein Live-Monitor, eine Fernbedienung (▲ ▼ ↵ ⓘ FUNCTION-TEST) und ein **Terminal**, über das sich jeder Befehl direkt senden lässt. Unter *Erweiterte Einstellungen* stellst du Adresse, Prüfsumme, Timeout und die Nummern der Schalterstellungen ein.
 
+Das Terminal ist ein Werkzeug für Fehlersuche und Fortgeschrittene. Unter *Einstellungen → Programm* lässt es sich **ausschalten**; dann ist es ausgeblendet und auch über die Schnittstelle gesperrt. Die Einstellung gilt für das Programm auf diesem Rechner.
+
 <img src="docs/images/30-secutest-schnittstelle.png" alt="SECUTEST-Seite" width="800">
+
+<img src="docs/images/70-programm-terminal.png" alt="Einstellungen – Programm: Terminal ein/aus" width="700">
 
 Technische Details zum Protokoll: **[docs/RS232-PROTOKOLL.md](docs/RS232-PROTOKOLL.md)**.
 
@@ -310,15 +320,28 @@ Gesperrte Geräte erscheinen rot in Übersicht und Liste. Auch ihre Prüfplakett
 
 ## Datenbanken, Cloud & Sicherheit
 
-* **Eine Datei pro Datenbank** (`*.secudb`). Für jeden Bekannten legst du eine eigene, komplett getrennte Datenbank an, jeweils mit eigenem Passwort und eigener 2FA.
-* **Cloud:** Die Datei liegt z. B. in `OneDrive/SecutestPruefmanager/` oder `iCloud Drive/SecutestPruefmanager/`. Auf anderen Rechnern taucht sie automatisch unter *In der Cloud gefunden* auf.
-* **Verschlüsselung:** SQLCipher-kompatibel (AES-256, PBKDF2-HMAC-SHA512). Auch Fotos, SMTP-Passwort und 2FA-Geheimnis liegen nur verschlüsselt in der Datei. Öffnen lässt sie sich zur Not auch mit *DB Browser for SQLite (SQLCipher)*.
+* **Eine Datei pro Datenbank** (`*.secudb`). Für jeden Bekannten legst du eine eigene, komplett getrennte Datenbank an, jeweils mit eigenem Passwort und eigener 2FA (oder ohne).
+* **Speicherort:** lokal, in der Cloud (z. B. `OneDrive/SecutestPruefmanager/`, `iCloud Drive/SecutestPruefmanager/`) oder in einem eigenen Ordner. Cloud-Datenbanken tauchen auf anderen Rechnern automatisch unter *In der Cloud gefunden* auf.
+* **Verschieben:** *Einstellungen → Sicherheit & Speicherort → Datenbank verschieben*. Ablauf: Sicherung → Kopie am neuen Ort → Kopie öffnen und prüfen (`quick_check`) → erst dann wird die alte Datei entfernt. Die Sicherungen ziehen auf Wunsch mit um, die Anmeldung bleibt bestehen.
+* **Verschlüsselung (optional):** SQLCipher-kompatibel (AES-256, PBKDF2-HMAC-SHA512). Mit Passwort liegen auch Fotos, SMTP-Passwort und 2FA-Geheimnis nur verschlüsselt in der Datei. Öffnen lässt sie sich zur Not auch mit *DB Browser for SQLite (SQLCipher)*. Ein Passwort lässt sich jederzeit **festlegen** (die Datei wird dann verschlüsselt), **ändern** oder **entfernen** (die Datei wird entschlüsselt). Nach dem Verschlüsseln bietet das Programm an, die alten unverschlüsselten Sicherungen zu löschen.
+* **Zwei-Faktor-Anmeldung (optional):** einrichten, neu einrichten (neues Handy) oder abschalten. Kritische Änderungen bestätigst du mit dem Code aus der App – oder mit einem Wiederherstellungscode, wenn das Handy weg ist; ohne 2FA mit dem Passwort.
 * **Sync-Sicherheit:** Das Programm nutzt keinen WAL-Modus, also keine Zusatzdateien, die der Cloud-Sync zerreißen könnte. Eine **Sperrdatei** (`*.lock`) warnt, wenn die Datenbank auf einem anderen Rechner geöffnet ist.
-* **Sicherungen:** beim ersten Öffnen jedes Tages automatisch, zusätzlich auf Knopfdruck. Sie landen verschlüsselt im Ordner `Sicherungen` neben der Datei; die letzten 15 bleiben erhalten.
-* **Anmeldung:** Passwort plus TOTP-Code mit Schutz gegen wiederverwendete Codes. Nach 5 Fehlversuchen wird 5 Minuten gesperrt. Bei Inaktivität sperrt das Programm automatisch (Standard 15 min) und entfernt dabei den Schlüssel aus dem Speicher.
+* **Sicherungen:** beim ersten Öffnen jedes Tages automatisch, zusätzlich auf Knopfdruck. Sie landen im Ordner `Sicherungen` neben der Datei (verschlüsselt, sofern ein Passwort gesetzt ist); die letzten 15 bleiben erhalten.
+* **Anmeldung:** Passwort und TOTP-Code (sofern eingeschaltet) mit Schutz gegen wiederverwendete Codes. Nach 5 Fehlversuchen wird 5 Minuten gesperrt. Bei Inaktivität sperrt das Programm automatisch (Standard 15 min) und entfernt dabei den Schlüssel aus dem Speicher.
 * **Lokal:** Der Server lauscht nur auf `127.0.0.1`, mit CSRF- und DNS-Rebinding-Schutz.
 
-> **Ehrlicher Hinweis zum Sicherheitsmodell:** Die Verschlüsselung der Datei hängt am **Passwort**. Die Zwei-Faktor-Anmeldung schützt den Zugang über das Programm. Wer Datei *und* Passwort hat, kann sie mit SQLCipher-Werkzeugen öffnen. Wähle daher ein starkes Passwort und verwahre es z. B. in Bitwarden.
+<table>
+<tr>
+<td><img src="docs/images/66-sicherheit-ungeschuetzt.png" alt="Sicherheit – ungeschützt" width="420"><br><sub>Ohne Passwort und 2FA: deutlicher Hinweis</sub></td>
+<td><img src="docs/images/68-sicherheit-geschuetzt.png" alt="Sicherheit – geschützt" width="420"><br><sub>Passwort und 2FA aktiv</sub></td>
+</tr>
+<tr>
+<td><img src="docs/images/67-2fa-einrichten.png" alt="2FA nachträglich einrichten" width="420"><br><sub>2FA nachträglich einrichten</sub></td>
+<td><img src="docs/images/69-datenbank-verschieben.png" alt="Datenbank verschieben" width="420"><br><sub>Datenbank verschieben (lokal → OneDrive)</sub></td>
+</tr>
+</table>
+
+> **Ehrlicher Hinweis zum Sicherheitsmodell:** Die Verschlüsselung der Datei hängt am **Passwort**. Die Zwei-Faktor-Anmeldung schützt nur den Zugang über das Programm – **ohne Passwort ist die Datei selbst ungeschützt**, auch mit 2FA. Wer Datei *und* Passwort hat, kann sie mit SQLCipher-Werkzeugen öffnen. Wähle daher ein starkes Passwort und verwahre es z. B. in Bitwarden.
 
 Lokale Programmeinstellungen (Liste der Datenbanken, Schnittstelle) liegen in:
 Windows `%APPDATA%\SecutestPruefmanager`, macOS `~/Library/Application Support/SecutestPruefmanager`, Linux `~/.config/secutest-pruefmanager`.
@@ -327,8 +350,18 @@ Windows `%APPDATA%\SecutestPruefmanager`, macOS `~/Library/Application Support/S
 
 ## Prüferinnerungen per E-Mail & Kalender
 
-* **E-Mail:** SMTP mit Vorlagen für Outlook/Hotmail, iCloud, Gmail, GMX, WEB.DE und T-Online, jeweils mit App-Passwort. Erinnert wird z. B. 30 und 7 Tage vorher, am Fälligkeitstag und danach regelmäßig, solange das Gerät überfällig ist. Jede Erinnerung geht nur einmal raus, alles steht im Versandprotokoll.
-* **Kalender:** Nach jeder bestandenen Prüfung kann das Programm eine **Kalendereinladung (.ics)** für den nächsten Termin mailen. Alle Termine lassen sich außerdem als `.ics` exportieren, passend für Outlook, Apple-/iCloud-Kalender, Google und Thunderbird. Kalendertermine erinnern **auch dann, wenn das Programm geschlossen ist**.
+Unter *Einstellungen → Erinnerungen* legst du fest, **wie** und **wann** erinnert wird:
+
+| | Zum Fälligkeitstermin (je Gerät) | Monatsweise gebündelt |
+|---|---|---|
+| **✉️ E-Mail** | Mail x Tage vor dem Termin, am Fälligkeitstag und regelmäßig bei Überfälligkeit | **eine Sammelmail pro Monat** mit allen in diesem Monat fälligen Geräten (x Tage vor bzw. am Monatsersten), Überfällige erscheinen jeden Monat erneut |
+| **📅 Kalender** | ein Termin je Gerät am Fälligkeitstag, mit Alarm | **ein Sammeltermin am Monatsersten** mit der Liste aller Geräte des Monats |
+| **✉️📅 Beides** | Mail mit Kalenderdatei im Anhang | Sammelmail mit Monats-Kalenderdatei |
+
+<img src="docs/images/65-erinnerungen-konfigurieren.png" alt="Erinnerungen konfigurieren" width="800">
+
+* **E-Mail:** SMTP mit Vorlagen für Outlook/Hotmail, iCloud, Gmail, GMX, WEB.DE und T-Online, jeweils mit App-Passwort. Jede Erinnerung geht nur einmal raus, alles steht im Versandprotokoll.
+* **Kalender:** Termine lassen sich als `.ics` herunterladen – passend für Outlook, Apple-/iCloud-Kalender, Google und Thunderbird. Jeder Termin hat eine feste ID: Beim erneuten Import (oder per automatischer **Kalendereinladung** nach einer Prüfung, einer Verschiebung oder einer Intervalländerung) wird der vorhandene Termin **aktualisiert** statt verdoppelt. Monate ohne fällige Geräte werden abgesagt. Kalendertermine erinnern **auch dann, wenn das Programm geschlossen ist**.
 * Erinnerung **pro Gerät** ein- und ausschaltbar; Empfänger pro Datenbank, z. B. der Eigentümer.
 * E-Mails werden versendet, solange das Programm läuft und die Datenbank entsperrt ist (beim Öffnen und alle 6 h). Für den Betrieb ohne geöffnetes Programm gibt es ein Skript, das du z. B. täglich über die Aufgabenplanung startest:
   ```bash
@@ -337,7 +370,23 @@ Windows `%APPDATA%\SecutestPruefmanager`, macOS `~/Library/Application Support/S
   ```
   ⚠ Dafür muss das Datenbank-Passwort auf dem Rechner hinterlegt sein. Das nur auf einem eigenen, geschützten Rechner tun.
 
-<img src="docs/images/31-erinnerungen.png" alt="Erinnerungen" width="800">
+### Fällige Prüfungen verschieben, Prüfintervall ändern
+
+* **⏭ Verschieben:** in der Übersicht (einzeln oder „alle verschieben“), in der Geräteliste für mehrere ausgewählte Geräte oder im Gerätedetail. Standard ist **„auf den nächsten Monat“** (gleicher Tag im Folgemonat; bei überfälligen Geräten der Folgemonat von heute), alternativ ein festes Datum. Eine Begründung landet im Änderungsprotokoll. Der **ursprüngliche Termin bleibt sichtbar** („⏭ verschoben“), bis das Gerät geprüft wurde.
+* **⏱ Prüfintervall:** wird **je Gerät in der Datenbank** gespeichert – im Gerätedetail oder für mehrere ausgewählte Geräte in der Geräteliste. Wahlweise wird der nächste Termin ab der letzten bestandenen Prüfung neu berechnet oder beibehalten. In den Einstellungen steht nur das Standard-Intervall für **neue** Geräte.
+
+> Prüffristen dienen der Sicherheit (DGUV Vorschrift 3, BetrSichV). Verschiebe eine Prüfung nur, wenn das Gerät bis dahin sicher benutzt werden kann – die Verantwortung liegt beim Betreiber.
+
+<table>
+<tr>
+<td><img src="docs/images/61-uebersicht-verschieben.png" alt="Übersicht mit Verschieben" width="420"><br><sub>Übersicht: ⏭ je Gerät oder „alle verschieben“</sub></td>
+<td><img src="docs/images/62-termin-verschieben.png" alt="Termin verschieben" width="420"><br><sub>Auf den nächsten Monat oder ein Datum</sub></td>
+</tr>
+<tr>
+<td><img src="docs/images/63-geraete-mehrfachauswahl.png" alt="Mehrfachauswahl" width="420"><br><sub>Mehrere Geräte auswählen</sub></td>
+<td><img src="docs/images/64-intervall-aendern.png" alt="Intervall ändern" width="420"><br><sub>Prüfintervall für mehrere Geräte, mit Vorschau</sub></td>
+</tr>
+</table>
 
 ---
 
@@ -356,7 +405,7 @@ Windows `%APPDATA%\SecutestPruefmanager`, macOS `~/Library/Application Support/S
 
 | Tabelle | Inhalt |
 |---|---|
-| `devices` | Inventar-Nr., Bezeichnung, Hersteller, Typ, Seriennummer, Kategorie, Schutzklasse, Geräteart, Anschlussart, Phasen, Nennspannung/-leistung/-strom, Heizleistung, Leitungslänge und Querschnitt, Standort, Eigentümer, Kaufdatum, Prüfintervall, Status, Erinnerung, letzte Prüfung und Ergebnis, nächster Termin, Notizen |
+| `devices` | Inventar-Nr., Bezeichnung, Hersteller, Typ, Seriennummer, Kategorie, Schutzklasse, Geräteart, Anschlussart, Phasen, Nennspannung/-leistung/-strom, Heizleistung, Leitungslänge und Querschnitt, Standort, Eigentümer, Kaufdatum, Prüfintervall, Status, Erinnerung, letzte Prüfung und Ergebnis, nächster Termin, ursprünglicher Termin und Anzahl Verschiebungen, Notizen |
 | `inspections` | Prüfdatum, Start und Ende, Norm (0701/0702), Anlass, Ablauf, Betriebsart, Schutzklasse, Grenzwertprofil, Prüfer, Ergebnis, Bewertung des SECUTEST, Maßnahme, Intervall, nächster Termin, Messgerät (IDN), Rohdaten (`PRO?`), Bemerkungen |
 | `measurements` | je Messwert: Messgröße (R<sub>SL</sub>, R<sub>ISO</sub>, U<sub>ISO</sub>, I<sub>EA</sub>, I<sub>B</sub>, I<sub>Sonde</sub>, ΔI, U<sub>AC/DC</sub>, U, I, P, S, λ, W, f …), Messpunkt, Wert, Originalanzeige (z. B. `>310.0`), Einheit, Grenzwert, Vergleich, Ergebnis, Quelle |
 | `inspection_checks` | Sicht- und Funktionsprüfung je Punkt (i. O. / Mangel / entfällt) mit Notiz, entfallene Schritte mit Begründung |
@@ -425,7 +474,7 @@ Vorschläge, die für Prüfer besonders nützlich wären:
 * Ist der Adapter-Treiber installiert? Unter Windows im Geräte-Manager unter „Anschlüsse (COM & LPT)“ nachsehen.
 * SECUTEST eingeschaltet, Drehschalter nicht auf OFF?
 * 1:1- statt Nullmodemkabel probieren oder umgekehrt.
-* Seite **SECUTEST** → *Automatisch suchen* zeigt pro Port das Ergebnis. Im **Terminal** testweise `IDN?` senden, auch einmal ohne Prüfsumme.
+* Seite **SECUTEST** → *Automatisch suchen* zeigt pro Port das Ergebnis. Im **Terminal** testweise `IDN?` senden, auch einmal ohne Prüfsumme. (Ist das Terminal nicht zu sehen: *Einstellungen → Programm → RS-232-Terminal anzeigen*.)
 * Linux: Benutzer in Gruppe `dialout`? macOS: `/dev/cu.*` statt `/dev/tty.*` verwenden (macht das Programm automatisch).
 </details>
 
@@ -436,7 +485,12 @@ Die Datenbank ist auf einem anderen Rechner offen oder das Programm wurde nicht 
 
 <details><summary><b>Handy verloren / neue Authenticator-App</b></summary>
 
-Melde dich mit einem **Wiederherstellungscode** an und richte unter *Einstellungen → Sicherheit → 2FA neu einrichten* die neue App ein. Danach am besten neue Wiederherstellungscodes erzeugen.
+Melde dich mit einem **Wiederherstellungscode** an und richte unter *Einstellungen → Sicherheit & Speicherort → 2FA neu einrichten* die neue App ein. Die Rückfrage dort bestätigst du ebenfalls mit einem Wiederherstellungscode („Handy nicht zur Hand?“). Danach am besten neue Wiederherstellungscodes erzeugen.
+</details>
+
+<details><summary><b>Passwort oder 2FA wieder abschalten</b></summary>
+
+*Einstellungen → Sicherheit & Speicherort*: „Passwort entfernen“ entschlüsselt die Datei, „2FA abschalten“ entfernt die Code-Abfrage. Beides wird vorher mit Code bzw. Passwort bestätigt. Ohne Passwort kann jeder mit Zugriff auf die Datei die Daten lesen.
 </details>
 
 <details><summary><b>Code wird abgelehnt</b></summary>

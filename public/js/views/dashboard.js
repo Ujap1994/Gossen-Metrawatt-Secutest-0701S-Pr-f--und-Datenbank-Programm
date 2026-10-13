@@ -1,6 +1,7 @@
 import { h, fmt, dueBadge, resultBadge, skSymbol } from '../ui.js';
 import { get } from '../api.js';
 import { state, procName } from '../state.js';
+import { postponeDialog } from '../duedialogs.js';
 
 export async function renderDashboard({ navigate }) {
   const { stats, due, recent } = await get('/dashboard');
@@ -28,12 +29,36 @@ export async function renderDashboard({ navigate }) {
       h(
         'div',
         { class: 'card' },
-        h('div', { class: 'card-head' }, h('h2', {}, 'Fällige Prüfungen (30 Tage)'), h('a', { href: '#/devices?due=soon', class: 'small' }, 'alle')),
+        h(
+          'div',
+          { class: 'card-head' },
+          h('h2', {}, 'Fällige Prüfungen (30 Tage)'),
+          h('div', { class: 'row' }, due.length > 1 ? h('button', { class: 'btn sm', title: 'Alle hier angezeigten Prüfungen verschieben', onclick: async () => (await postponeDialog(due)) && navigate('#/dashboard') }, '⏭ alle verschieben') : null, h('a', { href: '#/devices?due=soon', class: 'small' }, 'alle'))
+        ),
         due.length
           ? h(
               'table',
               { class: 't' },
-              h('tbody', {}, due.map((d) => h('tr', { class: 'click', onclick: () => navigate(`#/devices/${d.id}`) }, h('td', {}, skSymbol(d.protection_class, 18)), h('td', {}, h('b', {}, d.name), h('div', { class: 'small muted' }, `${d.inventory_no}${d.location ? ' · ' + d.location : ''}`)), h('td', {}, dueBadge(d)), h('td', {}, h('a', { class: 'btn sm', href: `#/inspect?device=${d.id}`, onclick: (e) => e.stopPropagation() }, 'Prüfen')))))
+              h(
+                'tbody',
+                {},
+                due.map((d) =>
+                  h(
+                    'tr',
+                    { class: 'click', onclick: () => navigate(`#/devices/${d.id}`) },
+                    h('td', {}, skSymbol(d.protection_class, 18)),
+                    h('td', {}, h('b', {}, d.name), h('div', { class: 'small muted' }, `${d.inventory_no}${d.location ? ' · ' + d.location : ''}`)),
+                    h('td', {}, dueBadge(d), d.postponed_from ? h('div', { class: 'small muted' }, '⏭ verschoben') : null),
+                    h(
+                      'td',
+                      { style: { whiteSpace: 'nowrap', textAlign: 'right' } },
+                      h('button', { class: 'btn sm', title: 'Auf den nächsten Monat verschieben …', onclick: async (e) => (e.stopPropagation(), (await postponeDialog([d])) && navigate('#/dashboard')) }, '⏭'),
+                      ' ',
+                      h('a', { class: 'btn sm', href: `#/inspect?device=${d.id}`, onclick: (e) => e.stopPropagation() }, 'Prüfen')
+                    )
+                  )
+                )
+              )
             )
           : h('div', { class: 'empty' }, '🎉 Keine Prüfungen in den nächsten 30 Tagen fällig.')
       ),

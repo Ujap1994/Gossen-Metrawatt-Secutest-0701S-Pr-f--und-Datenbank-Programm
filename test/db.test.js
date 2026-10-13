@@ -81,3 +81,27 @@ test('Einstellungen werden verschlüsselt gespeichert, Passwort wird nicht ausge
   assert.equal(repo.getSettings(db).reminders.smtp.port, 587, 'Standardwerte bleiben erhalten');
   db.close();
 });
+
+test('Datenbank ohne Passwort, nachträglich verschlüsseln und wieder entschlüsseln', () => {
+  const { isEncryptedFile, openDatabase: open } = require('../src/db/database');
+  const file = path.join(dir, 'offen.secudb');
+  const db = createDatabase(file, null, { name: 'Offen' });
+  repo.createDevice(db, { name: 'Lampe' });
+  assert.equal(db.encrypted, false);
+  assert.equal(isEncryptedFile(file), false);
+  db.changePassword('neues-passwort');
+  assert.equal(db.encrypted, true);
+  db.close();
+  assert.equal(isEncryptedFile(file), true);
+  assert.throws(() => open(file, ''), (e) => e.code === 'PASSWORD_REQUIRED');
+  assert.throws(() => open(file, 'falsch-falsch'), (e) => e.code === 'WRONG_PASSWORD');
+  const db2 = open(file, 'neues-passwort');
+  assert.equal(repo.listDevices(db2)[0].name, 'Lampe');
+  db2.removePassword();
+  db2.close();
+  assert.equal(isEncryptedFile(file), false);
+  const db3 = open(file, null);
+  assert.equal(db3.encrypted, false);
+  assert.equal(repo.listDevices(db3).length, 1);
+  db3.close();
+});

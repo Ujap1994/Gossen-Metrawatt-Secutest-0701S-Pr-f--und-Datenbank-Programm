@@ -55,9 +55,12 @@ const DEFAULT_SETTINGS = {
   manualDisplayCorrection: true,
   reminders: {
     enabled: false,
+    channel: 'both', // mail | calendar | both
+    grouping: 'due', // due = zum Fälligkeitstermin je Gerät, monthly = monatsweise gebündelt
     daysBefore: [30, 7],
     onDue: true,
     overdueEveryDays: 14,
+    overdueMonthly: true, // monatlich gebündelt: überfällige Geräte in jeder Monatsübersicht aufführen
     recipients: '',
     calendarInvite: true,
     calendarAlarmDays: 7,
@@ -82,6 +85,8 @@ function updateSettings(sdb, patch) {
   const next = deepMerge(getSettings(sdb), patch);
   next.defaultIntervalMonths = clampInt(next.defaultIntervalMonths, 1, 120, 12);
   next.autoLockMinutes = clampInt(next.autoLockMinutes, 1, 240, 15);
+  if (!['mail', 'calendar', 'both'].includes(next.reminders.channel)) next.reminders.channel = 'both';
+  if (!['due', 'monthly'].includes(next.reminders.grouping)) next.reminders.grouping = 'due';
   sdb.setJson('settings', next);
   audit(sdb, 'einstellungen', 'settings', null, Object.keys(patch).join(', '));
   return next;
@@ -297,10 +302,12 @@ function updateDevice(sdb, id, input) {
   if (data.interval_months && data.interval_months !== before.interval_months && !('next_due_date' in data) && before.last_inspection_date && before.last_result === 'bestanden') {
     data.next_due_date = addMonths(before.last_inspection_date, data.interval_months);
   }
+  // Neuer Termin (berechnet oder von Hand) hebt eine frühere Verschiebung auf
+  if ('next_due_date' in data && data.next_due_date !== before.next_due_date) Object.assign(data, { postponed_from: null, postpone_count: 0 });
   const cols = Object.keys(data);
   if (!cols.length) return before;
   sdb.db.prepare(`UPDATE devices SET ${cols.map((c) => `${c} = @${c}`).join(', ')}, updated_at = datetime('now') WHERE id = @id`).run({ ...data, id });
-  const changed = cols.filter((c) => String(before[c] ?? '') !== String(data[c] ?? ''));
+  const changed = cols.filter((c) => !['postponed_from', 'postpone_count'].includes(c) && String(before[c] ?? '') !== String(data[c] ?? ''));
   if (changed.length) audit(sdb, 'geraet-geaendert', 'device', id, changed.map((c) => `${c}: ${before[c] ?? '—'} → ${data[c] ?? '—'}`).join('; '));
   return getDevice(sdb, id);
 }
@@ -322,6 +329,88 @@ function duplicateDevice(sdb, id) {
   copy.status = 'aktiv';
   copy.name = d.name;
   return createDevice(sdb, copy);
+}
+
+// ---------------------------------------------------------------------------
+// Prüftermine verschieben / Prüfintervall ändern (mehrere Geräte auf einmal)
+// ---------------------------------------------------------------------------
+
+/**
+ * „Auf den nächsten Monat“: gleicher Tag im Folgemonat des Fälligkeitsmonats. Bei überfälligen
+ * Geräten zählt der aktuelle Monat, damit der neue Termin nicht wieder in der Vergangenheit liegt.
+ */
+function postponeTarget(dueIso, todayIso = today()) {
+  const [y, m, d] = dueIso.split('-').map(Number);
+  const [ty, tm] = todayIso.split('-').map(Number);
+  const base = y * 12 + (m - 1) >= ty * 12 + (tm - 1) ? [y, m] : [ty, tm];
+  const target = new Date(base[0], base[1], 1); // Monat + 1
+  const last = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+  target.setDate(Math.min(d, last));
+  return today(target);
+}
+
+function idList(ids) {
+  const list = [...new Set((Array.isArray(ids) ? ids : [ids]).map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+  if (!list.length) throw new RepoError('Bitte mindestens ein Gerät auswählen.');
+  if (list.length > 5000) throw new RepoError('Zu viele Geräte auf einmal.');
+  return list;
+}
+
+/**
+ * Prüftermine verschieben. Ohne `date` → auf den nächsten Monat, mit `date` → auf dieses Datum.
+ * Der ursprüngliche Termin bleibt in postponed_from erhalten (bis zur nächsten Prüfung).
+ */
+function postponeDevices(sdb, ids, { date, note } = {}) {
+  if (date != null && date !== '' && !isIsoDate(date)) throw new RepoError('Ungültiges Datum (erwartet JJJJ-MM-TT).');
+  const t = today();
+  if (date && date <= t) throw new RepoError('Der neue Termin muss in der Zukunft liegen.');
+  const cleanNote = note ? String(note).trim().slice(0, 500) : '';
+  const updated = [];
+  const skipped = [];
+  sdb.db.transaction(() => {
+    for (const id of idList(ids)) {
+      const d = sdb.db.prepare('SELECT * FROM devices WHERE id = ?').get(id);
+      if (!d) {
+        skipped.push({ id, reason: 'nicht gefunden' });
+        continue;
+      }
+      if (d.status === 'ausgemustert') {
+        skipped.push({ id, name: d.name, reason: 'ausgemustert' });
+        continue;
+      }
+      if (!d.next_due_date) {
+        skipped.push({ id, name: d.name, reason: 'kein Prüftermin eingetragen' });
+        continue;
+      }
+      const to = date || postponeTarget(d.next_due_date, t);
+      sdb.db
+        .prepare("UPDATE devices SET next_due_date = ?, postponed_from = COALESCE(postponed_from, ?), postpone_count = postpone_count + 1, updated_at = datetime('now') WHERE id = ?")
+        .run(to, d.next_due_date, id);
+      audit(sdb, 'pruefung-verschoben', 'device', id, `${d.inventory_no} ${d.name}: ${d.next_due_date} → ${to}${cleanNote ? ` – ${cleanNote}` : ''}`);
+      updated.push({ id, name: d.name, inventory_no: d.inventory_no, from: d.next_due_date, to });
+    }
+  })();
+  return { updated, skipped };
+}
+
+/**
+ * Prüfintervall mehrerer Geräte ändern (gespeichert je Gerät in der Datenbank).
+ * recalc=true: nächsten Termin ab der letzten bestandenen Prüfung neu berechnen.
+ */
+function changeInterval(sdb, ids, months, { recalc = true } = {}) {
+  const m = parseInt(months, 10);
+  if (!Number.isFinite(m) || m < 1 || m > 120) throw new RepoError('Prüfintervall muss zwischen 1 und 120 Monaten liegen.');
+  const result = [];
+  sdb.db.transaction(() => {
+    for (const id of idList(ids)) {
+      const before = getDevice(sdb, id);
+      const patch = { interval_months: m };
+      if (!recalc) patch.next_due_date = before.next_due_date;
+      const after = updateDevice(sdb, id, patch);
+      result.push({ id, name: after.name, inventory_no: after.inventory_no, intervalFrom: before.interval_months, intervalTo: m, dueFrom: before.next_due_date, dueTo: after.next_due_date });
+    }
+  })();
+  return result;
 }
 
 function distinctValues(sdb) {
@@ -438,7 +527,7 @@ function saveInspection(sdb, input) {
     // Gerät aktualisieren (Overrides aus der Prüfung, Datum, Ergebnis, Termin, Status)
     const devPatch = input.device_overrides ? cleanDevice(input.device_overrides, { partial: true }) : {};
     if (result !== 'abgebrochen') {
-      Object.assign(devPatch, { last_inspection_date: date, last_result: result, next_due_date: nextDue, status: newStatus, interval_months: interval });
+      Object.assign(devPatch, { last_inspection_date: date, last_result: result, next_due_date: nextDue, status: newStatus, interval_months: interval, postponed_from: null, postpone_count: 0 });
     }
     const cols = Object.keys(devPatch);
     if (cols.length) {
@@ -468,7 +557,7 @@ function deleteInspection(sdb, id) {
     sdb.db.prepare('DELETE FROM inspections WHERE id = ?').run(id);
     const latest = sdb.db.prepare("SELECT * FROM inspections WHERE device_id = ? AND result != 'abgebrochen' ORDER BY inspection_date DESC, id DESC LIMIT 1").get(insp.device_id);
     sdb.db
-      .prepare("UPDATE devices SET last_inspection_date = ?, last_result = ?, next_due_date = ?, updated_at = datetime('now') WHERE id = ?")
+      .prepare("UPDATE devices SET last_inspection_date = ?, last_result = ?, next_due_date = ?, postponed_from = NULL, postpone_count = 0, updated_at = datetime('now') WHERE id = ?")
       .run(latest?.inspection_date ?? null, latest?.result ?? null, latest?.next_due_date ?? null, insp.device_id);
     audit(sdb, 'pruefung-geloescht', 'inspection', id, `Prüfung vom ${insp.inspection_date} (Gerät ${insp.device_id})`);
   })();
@@ -594,6 +683,9 @@ module.exports = {
   listInspections,
   stats,
   dueDevices,
+  postponeTarget,
+  postponeDevices,
+  changeInterval,
   addAttachment,
   getAttachment,
   deleteAttachment,

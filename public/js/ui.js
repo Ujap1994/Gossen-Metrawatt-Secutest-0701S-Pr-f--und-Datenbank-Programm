@@ -217,10 +217,56 @@ export function select(options, value, attrs = {}) {
     'select',
     { class: 'input', ...attrs },
     options.map((o) => {
-      const [v, l] = Array.isArray(o) ? o : [o.value ?? o.id, o.label ?? o.name];
+      const [v, l] = Array.isArray(o) ? o : typeof o !== 'object' ? [o, o] : [o.value ?? o.id, o.label ?? o.name];
       return h('option', { value: v, selected: String(v) === String(value) }, l);
     })
   );
+}
+
+/**
+ * Auswahlkarten (wie Radio-Buttons): options = [{ value, title, text, icon, disabled }].
+ * Das Element hat eine Eigenschaft `value`.
+ */
+export function choices(options, value, { onchange, cols = 2 } = {}) {
+  const wrap = h('div', { class: `grid c${cols} choices`, role: 'radiogroup' });
+  let current = value;
+  const render = () => {
+    for (const el of wrap.children) {
+      const on = el.dataset.value === String(current);
+      el.classList.toggle('on', on);
+      el.setAttribute('aria-checked', on ? 'true' : 'false');
+    }
+  };
+  for (const o of options) {
+    wrap.appendChild(
+      h(
+        'div',
+        {
+          class: `choice${o.disabled ? ' disabled' : ''}`,
+          role: 'radio',
+          tabindex: o.disabled ? -1 : 0,
+          dataset: { value: String(o.value) },
+          onclick: () => {
+            if (o.disabled || current === o.value) return;
+            current = o.value;
+            render();
+            onchange?.(current);
+          },
+          onkeydown: (e) => (e.key === ' ' || e.key === 'Enter') && (e.preventDefault(), e.currentTarget.click()),
+        },
+        h('div', { class: 't' }, o.icon ? h('span', {}, o.icon) : null, o.title),
+        o.text ? h('div', { class: 'd' }, o.text) : null
+      )
+    );
+  }
+  render();
+  Object.defineProperty(wrap, 'value', { get: () => current, set: (v) => ((current = v), render()) });
+  return wrap;
+}
+
+/** Unterreiter, z. B. in den Einstellungen: tabs = [[href, label]] */
+export function subTabs(tabs, active) {
+  return h('nav', { class: 'subtabs' }, tabs.map(([href, label]) => h('a', { href, class: href === active ? 'on' : '' }, label)));
 }
 
 export function datalist(id, values) {
