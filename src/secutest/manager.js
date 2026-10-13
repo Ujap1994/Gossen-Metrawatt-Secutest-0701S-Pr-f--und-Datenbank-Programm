@@ -18,6 +18,7 @@ const DEFAULT_SECUTEST_CFG = {
   switchPositions: { ...SWITCH_POSITIONS },
   softwareMains: false, // Netz an Prüfdose per TAS!5 (nur mit codiertem Schnittstellenstecker)
   autoConnect: true, // eingesteckten Adapter automatisch anpingen und verbinden
+  terminal: true, // RS-232-Terminal (freie Befehle) auf der SECUTEST-Seite anzeigen – in den Einstellungen abschaltbar
   lastPort: '',
 };
 

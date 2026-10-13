@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Datenbanken auswählen/anlegen und anmelden (Passwort + 2FA). Keine Anmeldung erforderlich.
+ * Datenbanken auswählen/anlegen und anmelden (Passwort und 2FA, beides optional). Keine Anmeldung erforderlich.
  */
 const fs = require('fs');
 const path = require('path');
@@ -8,7 +8,7 @@ const { asyncRouter } = require('./util');
 const QRCode = require('qrcode');
 const config = require('../config');
 const { detectCloudLocations, discoverDatabases, localFolder, providerForPath } = require('../db/cloud');
-const { readLock, validatePassword, DbError } = require('../db/database');
+const { readLock, validatePassword, isEncryptedFile, DbError } = require('../db/database');
 const { setSessionCookie, clearSessionCookie, AuthError } = require('../auth/session');
 const repo = require('../db/repo');
 
@@ -33,9 +33,11 @@ module.exports = function authRoutes(sessions) {
     const registered = cfg.databases.map((d) => {
       const exists = fs.existsSync(d.path);
       const lock = exists ? readLock(d.path) : null;
-      return { ...d, exists, provider: providerForPath(d.path), lock: lock && !lock.stale && !lock.mine ? lock : null, active: sessions.active?.dbEntry.id === d.id };
+      return { ...d, exists, encrypted: exists ? isEncryptedFile(d.path) : null, provider: providerForPath(d.path), lock: lock && !lock.stale && !lock.mine ? lock : null, active: sessions.active?.dbEntry.id === d.id };
     });
-    const discovered = discoverDatabases().filter((x) => !cfg.databases.some((d) => config.samePath(d.path, x.path)));
+    const discovered = discoverDatabases()
+      .filter((x) => !cfg.databases.some((d) => config.samePath(d.path, x.path)))
+      .map((x) => ({ ...x, encrypted: isEncryptedFile(x.path) }));
     res.json({ registered, discovered, cloud: detectCloudLocations(), local: localFolder(), extension: config.DB_EXTENSION });
   });
 
@@ -55,10 +57,13 @@ module.exports = function authRoutes(sessions) {
 
   // ---------- Neue Datenbank ----------
   r.post('/setup/begin', async (req, res) => {
-    const { name, folder, password, password2, owner = {}, inspector = {}, intervalMonths } = req.body || {};
+    const { name, folder, owner = {}, inspector = {}, intervalMonths, usePassword = true, twoFactor = true } = req.body || {};
+    let { password, password2 } = req.body || {};
     if (!String(name || '').trim()) throw new DbError('BAD_INPUT', 'Bitte einen Namen für die Datenbank angeben (z. B. „Meine Geräte“ oder „Familie Müller“).');
-    if (password !== password2) throw new DbError('BAD_INPUT', 'Die Passwörter stimmen nicht überein.');
-    validatePassword(password);
+    if (usePassword) {
+      if (password !== password2) throw new DbError('BAD_INPUT', 'Die Passwörter stimmen nicht überein.');
+      validatePassword(password);
+    } else password = password2 = null;
     const dir = String(folder || '').trim() || localFolder();
     if (!path.isAbsolute(dir)) throw new DbError('BAD_INPUT', 'Bitte einen absoluten Ordnerpfad angeben.');
     const file = path.join(dir, safeFileName(name) + config.DB_EXTENSION);
@@ -68,6 +73,15 @@ module.exports = function authRoutes(sessions) {
       inspector: { ...repo.DEFAULT_SETTINGS.inspector, ...inspector },
       defaultIntervalMonths: Number(intervalMonths) || 12,
     };
+    if (!twoFactor) {
+      // Ohne Zwei-Faktor-Anmeldung: sofort anlegen und anmelden
+      const { sdb } = sessions.createWithout2fa({ file, password, name: String(name).trim(), settings });
+      const entry = config.registerDatabase({ file: sdb.file, name: sdb.getMeta('db_name') });
+      config.touchDatabase(entry.id);
+      const { sid } = sessions.activateNew(entry, sdb);
+      setSessionCookie(res, sid);
+      return res.json({ created: true, db: entry, file: sdb.file });
+    }
     const s = sessions.beginSetup({ file, password, name: String(name).trim(), settings });
     const qr = await QRCode.toDataURL(s.uri, { margin: 1, width: 240 });
     res.json({ setupToken: s.setupToken, secret: s.secret, uri: s.uri, qr, file });
@@ -88,6 +102,12 @@ module.exports = function authRoutes(sessions) {
     if (!entry) throw new AuthError('Datenbank nicht gefunden.', 404, 'NOT_FOUND');
     try {
       const out = sessions.unlockPassword(entry, String(req.body.password || ''), { force: !!req.body.force });
+      if (out.sid) {
+        // keine Zwei-Faktor-Anmeldung eingerichtet → direkt angemeldet
+        config.touchDatabase(entry.id);
+        setSessionCookie(res, out.sid);
+        return res.json({ ok: true, unlocked: true, name: out.name });
+      }
       res.json(out);
     } catch (e) {
       if (e.code === 'LOCKED') return res.status(423).json({ error: e.message, code: 'LOCKED', lock: e.lock });

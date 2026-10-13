@@ -107,7 +107,7 @@ function createApp({ sessions = new SessionManager(), scheduler = new ReminderSc
   app.use((err, req, res, next) => {
     let status = err.status || 500;
     if (!err.status && err.code) {
-      status = { WRONG_PASSWORD: 401, WEAK_PASSWORD: 400, EXISTS: 409, NOT_FOUND: 404, LOCKED: 423, BAD_INPUT: 400, NAK: 409, TIMEOUT: 504, NOT_CONNECTED: 409, OPEN_FAILED: 409, NO_PORT: 400, NO_SERIAL: 500, BAD_POSITION: 400, NO_SIMULATOR: 400, NEWER_SCHEMA: 409, SQLITE_CONSTRAINT_UNIQUE: 409 }[err.code] || 500;
+      status = { WRONG_PASSWORD: 401, PASSWORD_REQUIRED: 401, COPY_FAILED: 500, WEAK_PASSWORD: 400, EXISTS: 409, NOT_FOUND: 404, LOCKED: 423, BAD_INPUT: 400, NAK: 409, TIMEOUT: 504, NOT_CONNECTED: 409, OPEN_FAILED: 409, NO_PORT: 400, NO_SERIAL: 500, BAD_POSITION: 400, NO_SIMULATOR: 400, NEWER_SCHEMA: 409, SQLITE_CONSTRAINT_UNIQUE: 409 }[err.code] || 500;
     }
     if (err.type === 'entity.too.large') status = 413;
     if (status >= 500 && !(err instanceof AuthError)) console.error(err);
@@ -174,7 +174,7 @@ async function main() {
     if (stopping) return;
     stopping = true;
     console.log(`\n${reason} …`);
-    sessions.lock(reason);
+    sessions.closeAll(reason);
     await secutest.disconnect().catch(() => {});
     secutest.stopWatcher();
     if (server) server.close(() => process.exit(0));

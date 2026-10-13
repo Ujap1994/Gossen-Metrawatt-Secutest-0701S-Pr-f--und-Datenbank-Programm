@@ -108,7 +108,7 @@ const MIGRATIONS = [
   );
   CREATE INDEX idx_checks_inspection ON inspection_checks(inspection_id);
 
-  -- Fotos / Dokumente (verschlüsselt in der DB)
+  -- Fotos / Dokumente (in der DB – verschlüsselt, sofern ein Passwort gesetzt ist)
   CREATE TABLE attachments (
     id            INTEGER PRIMARY KEY,
     device_id     INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
@@ -144,6 +144,11 @@ const MIGRATIONS = [
     entity_id INTEGER,
     details   TEXT
   );
+  `,
+  // ---------- Version 2: Prüftermin verschieben ----------
+  `
+  ALTER TABLE devices ADD COLUMN postponed_from TEXT;                     -- ursprünglicher Termin vor dem (ersten) Verschieben
+  ALTER TABLE devices ADD COLUMN postpone_count INTEGER NOT NULL DEFAULT 0; -- wie oft seit der letzten Prüfung verschoben
   `,
 ];
 

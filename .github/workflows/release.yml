@@ -184,7 +184,8 @@ jobs:
           - { name: Debian 12, image: 'debian:12', cmd: 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq /r/secutest-pruefmanager_*_amd64.deb' }
           - { name: Fedora, image: 'fedora:latest', cmd: 'dnf install -y -q /r/secutest-pruefmanager-*.x86_64.rpm' }
           - { name: Rocky Linux 9 (Mindestversion), image: 'rockylinux:9', cmd: 'dnf install -y -q /r/secutest-pruefmanager-*.x86_64.rpm' }
-          - { name: openSUSE Tumbleweed, image: 'opensuse/tumbleweed', cmd: 'zypper --non-interactive --no-gpg-checks install --allow-unsigned-rpm /r/secutest-pruefmanager-*.x86_64.rpm' }
+          # zypper-Code 106: ein Spiegelserver war nicht erreichbar, das Paket ist trotzdem installiert (der Selbsttest prüft das)
+          - { name: openSUSE Tumbleweed, image: 'opensuse/tumbleweed', cmd: 'zypper --non-interactive --no-gpg-checks install --allow-unsigned-rpm /r/secutest-pruefmanager-*.x86_64.rpm || [ \$? -eq 106 ]' }
           - { name: Arch Linux, image: 'archlinux:latest', cmd: 'pacman -U --noconfirm /r/secutest-pruefmanager-*-x86_64.pkg.tar.zst' }
           - { name: Alpine Linux, image: 'alpine:latest', cmd: 'apk add --no-cache --allow-untrusted /r/secutest-pruefmanager_*_x86_64.apk' }
     steps:

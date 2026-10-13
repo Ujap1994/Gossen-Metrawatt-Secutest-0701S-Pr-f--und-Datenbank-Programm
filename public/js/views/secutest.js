@@ -5,6 +5,7 @@ import { state, onSecutest } from '../state.js';
 
 export async function renderSecutest() {
   let st = await get('/secutest/status');
+  const showTerminal = st.config?.terminal !== false; // in Einstellungen → Programm abschaltbar
   const statusBox = h('div');
   const portSel = select([['', 'Lade Schnittstellen …']], '');
   const scanLog = h('div', { class: 'small' });
@@ -16,7 +17,7 @@ export async function renderSecutest() {
     const id = st.identity;
     fill(statusBox, 
       h('div', { class: 'row' }, h('span', { class: `dot ${st.connected ? (st.simulator ? 'sim' : 'on') : 'off'}` }), h('b', {}, st.connected ? (st.simulator ? 'Simulator verbunden' : `Verbunden mit ${st.port}`) : st.scanning ? 'Suche läuft …' : 'Nicht verbunden'), st.remote ? h('span', { class: 'badge warn' }, 'Remote-Modus aktiv') : null),
-      id ? h('dl', { class: 'kv', style: { marginTop: '8px' } }, h('dt', {}, 'Gerät'), h('dd', {}, [id.manufacturer, id.model].filter(Boolean).join(' ')), h('dt', {}, 'Firmware'), h('dd', {}, id.firmware || '—'), h('dt', {}, 'Datum im Gerät'), h('dd', {}, id.date || '—'), h('dt', {}, 'Geräte-ID'), h('dd', {}, id.deviceId || '—'), h('dt', {}, 'Kalibrierung'), h('dd', {}, id.calibration || '—'), h('dt', {}, 'Adresse'), h('dd', {}, id.address ?? '—')) : st.connected ? h('div', { class: 'alert warn small' }, 'Verbunden, aber keine Antwort auf IDN?. Kabel (ggf. Nullmodem), Port und Gerät prüfen – Terminal unten nutzen.') : null,
+      id ? h('dl', { class: 'kv', style: { marginTop: '8px' } }, h('dt', {}, 'Gerät'), h('dd', {}, [id.manufacturer, id.model].filter(Boolean).join(' ')), h('dt', {}, 'Firmware'), h('dd', {}, id.firmware || '—'), h('dt', {}, 'Datum im Gerät'), h('dd', {}, id.date || '—'), h('dt', {}, 'Geräte-ID'), h('dd', {}, id.deviceId || '—'), h('dt', {}, 'Kalibrierung'), h('dd', {}, id.calibration || '—'), h('dt', {}, 'Adresse'), h('dd', {}, id.address ?? '—')) : st.connected ? h('div', { class: 'alert warn small' }, `Verbunden, aber keine Antwort auf IDN?. Kabel (ggf. Nullmodem), Port und Gerät prüfen${showTerminal ? ' – Terminal unten nutzen' : ''}.`) : null,
       st.lastScan ? h('div', { class: 'small muted', style: { marginTop: '6px' } }, `Letzte Suche ${new Date(st.lastScan.at).toLocaleTimeString('de-DE')}: `, st.lastScan.found ? `gefunden an ${st.lastScan.found}` : `nichts gefunden (${st.lastScan.tried.map((t) => `${t.path}: ${t.error || 'ok'}`).join('; ') || 'keine Ports'})`) : null
     );
   };
@@ -93,8 +94,8 @@ export async function renderSecutest() {
   cmd.addEventListener('keydown', (e) => e.key === 'Enter' && (send(), cmd.select()));
 
   const unsub = onSecutest((type, data) => {
-    if (!document.body.contains(term)) return unsub();
-    if (type === 'log') addLog(data);
+    if (!document.body.contains(statusBox)) return unsub();
+    if (type === 'log' && showTerminal) addLog(data);
     if (type === 'state') {
       st = data;
       drawStatus();
@@ -185,7 +186,9 @@ export async function renderSecutest() {
         h('div', { class: 'small muted' }, 'FUNCTION-TEST per Schnittstelle schaltet nur Netz auf die Prüfdose, wenn der Schnittstellenstecker codiert ist (Pin 1–9 und 5–6 gebrückt).')
       )
     ),
-    h(
+    !showTerminal
+      ? h('div', { class: 'card small muted', style: { marginTop: '14px' } }, '📟 Das RS-232-Terminal ist ausgeschaltet – einschalten unter ', h('a', { href: '#/settings/program' }, 'Einstellungen → Programm'), '.')
+      : h(
       'div',
       { class: 'card stack', style: { marginTop: '14px' } },
       h('div', { class: 'card-head' }, h('h2', {}, 'Terminal / Protokoll'), h('div', { class: 'row' }, ['IDN?', 'MES?', 'WER?', 'PRO?', 'TAS!R', 'TAS!r', '^C'].map((q) => h('button', { class: 'btn sm', onclick: () => send(q) }, q)), h('button', { class: 'btn sm', onclick: () => clear(term) }, 'Leeren'))),

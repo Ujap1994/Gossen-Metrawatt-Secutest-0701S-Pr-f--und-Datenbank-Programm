@@ -5,7 +5,7 @@
  *  - Server-Port, zuletzt genutzte serielle Schnittstelle
  *
  * Alles Sensible (Geräte, Prüfungen, SMTP-Passwort, 2FA-Geheimnis) liegt
- * ausschließlich verschlüsselt in der jeweiligen Datenbank-Datei.
+ * ausschließlich in der jeweiligen Datenbank-Datei (verschlüsselt, sofern ein Passwort gesetzt ist).
  */
 const fs = require('fs');
 const os = require('os');

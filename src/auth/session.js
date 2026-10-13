@@ -1,11 +1,15 @@
 'use strict';
 /**
- * Anmeldung an einer Datenbank: Passwort (entschlüsselt die Datei) + TOTP-Code (2FA).
+ * Anmeldung an einer Datenbank: Passwort (entschlüsselt die Datei) und TOTP-Code (2FA) –
+ * beides optional und je Datenbank in den Einstellungen ein- und ausschaltbar.
  * Es ist immer höchstens EINE Datenbank geöffnet. Nach Inaktivität wird automatisch gesperrt
  * (Datenbank geschlossen, Schlüssel aus dem Speicher entfernt).
  */
+const fs = require('fs');
+const path = require('path');
 const crypto = require('crypto');
-const { openDatabase, createDatabase } = require('../db/database');
+const { openDatabase, createDatabase, verifyPassword, moveBackups, DbError } = require('../db/database');
+const config = require('../config');
 const totp = require('./totp');
 const repo = require('../db/repo');
 
@@ -84,6 +88,13 @@ class SessionManager {
   // ------------------------------------------------------------------
   // Neue Datenbank: Schritt 1 (Daten + Passwort) -> Schritt 2 (2FA bestätigen)
   // ------------------------------------------------------------------
+  /** Neue Datenbank ohne Zwei-Faktor-Anmeldung: sofort anlegen. */
+  createWithout2fa({ file, password, name, settings }) {
+    const sdb = createDatabase(file, password || null, { name, settings });
+    repo.audit(sdb, 'datenbank-angelegt', 'db', null, `${name}${password ? '' : ' (ohne Passwort)'}, ohne 2FA`);
+    return { sdb, file: sdb.file };
+  }
+
   beginSetup({ file, password, name, settings }) {
     const secret = totp.generateSecret();
     const t = token();
@@ -97,7 +108,7 @@ class SessionManager {
     if (!s || s.expires < Date.now()) throw new AuthError('Einrichtung abgelaufen – bitte neu beginnen.', 410, 'SETUP_EXPIRED');
     const step = totp.verify(s.secret, code);
     if (step == null) throw new AuthError('Der Code aus der Authenticator-App ist falsch. Uhrzeit von PC und Handy prüfen.', 401, 'BAD_CODE');
-    const sdb = createDatabase(s.file, s.password, { name: s.name, settings: s.settings });
+    const sdb = createDatabase(s.file, s.password || null, { name: s.name, settings: s.settings });
     const recovery = totp.generateRecoveryCodes();
     sdb.setMeta('totp_secret', s.secret);
     sdb.setMeta('totp_last_step', String(step));
@@ -120,12 +131,14 @@ class SessionManager {
         this._fail(dbEntry.path);
         throw new AuthError(e.message, 401, 'WRONG_PASSWORD');
       }
+      if (e.code === 'PASSWORD_REQUIRED') throw new AuthError(e.message, 401, 'PASSWORD_REQUIRED');
       if (e.code === 'LOCKED') throw Object.assign(new AuthError(e.message, 423, 'LOCKED'), { lock: e.lock });
       throw e;
     }
+    // Ohne Zwei-Faktor-Anmeldung ist man nach dem Passwort (bzw. sofort) angemeldet
     if (!sdb.getMeta('totp_secret')) {
-      sdb.close();
-      throw new AuthError('Für diese Datenbank ist keine Zwei-Faktor-Anmeldung eingerichtet (Datei beschädigt?).', 500, 'NO_2FA');
+      this.failures.delete(dbEntry.path);
+      return { name: sdb.getMeta('db_name'), ...this._activate(dbEntry, sdb) };
     }
     const t = token();
     this.pending.set(t, { dbEntry, sdb, expires: Date.now() + PENDING_TTL_MS, attempts: 0 });
@@ -184,6 +197,13 @@ class SessionManager {
     return this._activate(dbEntry, sdb);
   }
 
+  /** Beim Beenden: alle Datenbanken schließen – auch die einer begonnenen, noch nicht abgeschlossenen Anmeldung. */
+  closeAll(reason = 'Programm beendet') {
+    for (const t of [...this.pending.keys()]) this._closePending(t);
+    this.setups.clear();
+    this.lock(reason);
+  }
+
   lock(reason = 'Gesperrt') {
     if (!this.active) return;
     const a = this.active;
@@ -220,11 +240,112 @@ class SessionManager {
     return !!(this.active && sid && safeEqual(sid, this.active.sid));
   }
 
-  /** Erneute Bestätigung für kritische Aktionen (Passwort ändern, 2FA neu, …) */
-  reauth(sdb, { code }) {
-    const step = totp.verify(sdb.getMeta('totp_secret'), code, { lastStep: Number(sdb.getMeta('totp_last_step', '-1')) });
-    if (step == null) throw new AuthError('Authenticator-Code falsch.', 401, 'BAD_CODE');
-    sdb.setMeta('totp_last_step', String(step));
+  /** Welche Schutzmechanismen sind für die Datenbank aktiv? */
+  static security(sdb) {
+    return { encrypted: !!sdb.encrypted, twoFactor: !!sdb.getMeta('totp_secret'), recoveryRemaining: sdb.getJson('recovery_codes', []).length };
+  }
+
+  /**
+   * Erneute Bestätigung für kritische Aktionen (Passwort ändern, 2FA ändern, verschieben …):
+   * mit 2FA → Code aus der App (oder Wiederherstellungscode), sonst mit Passwort → aktuelles Passwort,
+   * sonst ohne Abfrage.
+   */
+  reauth(sdb, { code, recoveryCode, password } = {}) {
+    const f = sdb.file;
+    this._checkLockout(f);
+    if (sdb.getMeta('totp_secret') && recoveryCode) {
+      // Handy verloren: Wiederherstellungscode statt App-Code (wird verbraucht)
+      const stored = sdb.getJson('recovery_codes', []);
+      const idx = totp.matchRecoveryCode(recoveryCode, stored);
+      if (idx < 0) {
+        this._fail(f);
+        throw new AuthError('Wiederherstellungscode ungültig oder bereits benutzt.', 401, 'BAD_CODE');
+      }
+      stored.splice(idx, 1);
+      sdb.setJson('recovery_codes', stored);
+      repo.audit(sdb, 'bestaetigung-wiederherstellungscode', 'db', null, `${stored.length} Codes verbleibend`);
+    } else if (sdb.getMeta('totp_secret')) {
+      const step = totp.verify(sdb.getMeta('totp_secret'), code, { lastStep: Number(sdb.getMeta('totp_last_step', '-1')) });
+      if (step == null) {
+        this._fail(f);
+        throw new AuthError('Authenticator-Code falsch.', 401, 'BAD_CODE');
+      }
+      sdb.setMeta('totp_last_step', String(step));
+    } else if (sdb.encrypted) {
+      try {
+        verifyPassword(f, String(password || ''));
+      } catch (e) {
+        this._fail(f);
+        throw new AuthError('Das aktuelle Passwort ist falsch.', 401, 'WRONG_PASSWORD');
+      }
+    }
+  }
+
+  /**
+   * Geöffnete Datenbank an einen anderen Ort verschieben (z. B. lokal ↔ OneDrive/iCloud).
+   * Ablauf: Sicherung → Kopie am Ziel → Kopie öffnen und prüfen → Original entfernen.
+   * Die Anmeldung bleibt bestehen.
+   */
+  moveActive({ folder, password, withBackups = true }) {
+    const a = this.active;
+    if (!a) throw new AuthError('Keine Datenbank geöffnet.', 401);
+    const dir = String(folder || '').trim();
+    if (!dir || !path.isAbsolute(dir)) throw new DbError('BAD_INPUT', 'Bitte einen absoluten Zielordner angeben.');
+    const source = a.sdb.file;
+    if (config.samePath(path.dirname(source), dir)) throw new DbError('BAD_INPUT', 'Die Datenbank liegt bereits in diesem Ordner.');
+    const target = path.join(dir, path.basename(source));
+    if (fs.existsSync(target)) throw new DbError('EXISTS', `Im Zielordner gibt es bereits eine Datei „${path.basename(target)}“.`);
+    const pw = a.sdb.encrypted ? String(password || '') : null;
+    if (pw) verifyPassword(source, pw); // für das Öffnen der Kopie nötig (Schlüssel wird nicht gespeichert)
+    else if (a.sdb.encrypted) throw new AuthError('Zum Verschieben bitte das Passwort der Datenbank eingeben.', 401, 'PASSWORD_REQUIRED');
+    fs.mkdirSync(dir, { recursive: true });
+    a.sdb.backup('vor-verschieben');
+    repo.audit(a.sdb, 'datenbank-verschoben', 'db', null, `${source} → ${target}`);
+    a.sdb.close();
+    let moved;
+    try {
+      fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL);
+      moved = openDatabase(target, pw, { force: true });
+      const check = moved.db.pragma('quick_check', { simple: true });
+      if (check !== 'ok') throw new DbError('COPY_FAILED', `Die Kopie ist fehlerhaft (${check}).`);
+    } catch (e) {
+      try {
+        moved?.close();
+      } catch {
+        /* egal */
+      }
+      fs.rmSync(target, { force: true });
+      // Original wieder öffnen, damit die Sitzung weiterläuft – klappt das nicht, sauber sperren
+      try {
+        a.sdb = openDatabase(source, pw, { force: true });
+      } catch {
+        this.active = null;
+        if (this.onLock) this.onLock('Verschieben fehlgeschlagen');
+      }
+      throw e;
+    }
+    fs.rmSync(source, { force: true });
+    let backups = 0;
+    if (withBackups) {
+      try {
+        backups = moveBackups(source, target);
+      } catch {
+        /* Sicherungen bleiben dann am alten Ort */
+      }
+    }
+    let entry = a.dbEntry;
+    config.update((cfg) => {
+      const e = cfg.databases.find((d) => d.id === entry.id);
+      if (e) {
+        e.path = path.resolve(target);
+        entry = e;
+      }
+    });
+    a.sdb = moved;
+    a.dbEntry = { ...entry, path: path.resolve(target) };
+    a.lastActivity = Date.now();
+    if (this.onUnlock) this.onUnlock(a);
+    return { file: target, backups };
   }
 }
 

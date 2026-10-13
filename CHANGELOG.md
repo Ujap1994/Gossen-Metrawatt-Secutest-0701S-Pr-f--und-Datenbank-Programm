@@ -4,6 +4,61 @@ Alle Änderungen am Secutest Prüfmanager, die neueste oben. Der jeweils oberste
 
 > ⚠ Open-Source-Software ohne Gewähr. Prüfungen nur durch Elektrofachkräfte. Siehe [Haftungsausschluss](README.md#haftungsausschluss).
 
+## 1.2.0 – Passwort & 2FA optional, Speicherort frei wählbar, Erinnerungen nach Wunsch
+
+### Neu: Passwort und Zwei-Faktor-Anmeldung sind freiwillig
+Beim Anlegen einer Datenbank wählst du selbst: **mit oder ohne Passwort** (Verschlüsselung AES-256) und **mit oder ohne Zwei-Faktor-Anmeldung**. Beides bleibt empfohlen und lässt sich jederzeit unter *Einstellungen → Sicherheit & Speicherort* ändern:
+
+* **Passwort festlegen:** Die bisher offene Datei wird verschlüsselt. Danach bietet das Programm an, alte unverschlüsselte Sicherungen zu löschen.
+* **Passwort ändern** oder **entfernen**. Beim Entfernen wird die Datei nach einer deutlichen Warnung entschlüsselt.
+* **2FA einrichten**, **neu einrichten** (z. B. bei neuem Handy) oder **abschalten**. Beim ersten Einschalten gibt es 10 Wiederherstellungscodes.
+* Kritische Änderungen bestätigst du mit dem App-Code, ohne 2FA mit dem Passwort. **Neu:** Ist das Handy weg, geht das auch mit einem **Wiederherstellungscode**.
+* Datenbanken ohne Passwort sind in der Liste mit **🔓 ohne Passwort** markiert und öffnen sich mit einem Klick.
+
+<img src="docs/images/60-neue-datenbank-optional.png" alt="Neue Datenbank: Speicherort, Passwort und 2FA optional" width="720">
+
+<img src="docs/images/66-sicherheit-ungeschuetzt.png" alt="Sicherheit – ungeschützte Datenbank" width="720">
+
+<img src="docs/images/68-sicherheit-geschuetzt.png" alt="Sicherheit – Passwort und 2FA aktiv" width="720">
+
+### Neu: Datenbank lokal, in der Cloud oder im eigenen Ordner – und verschiebbar
+* Speicherort beim Anlegen: **OneDrive/iCloud Drive**, **nur auf diesem Rechner (lokal)** oder ein **eigener Ordner** (USB-Stick, NAS, Nextcloud …).
+* **Datenbank verschieben**, z. B. von lokal nach OneDrive und zurück. Ablauf: Sicherung → Kopie → Kopie öffnen und prüfen → Original entfernen. Die Sicherungen ziehen mit um, und du bleibst angemeldet.
+
+<img src="docs/images/69-datenbank-verschieben.png" alt="Datenbank verschieben" width="640">
+
+### Neu: Erinnerungen nach Wunsch – E-Mail, Kalender, monatlich gebündelt
+Unter *Einstellungen → Erinnerungen* wählst du, **wie** du erinnert wirst (**E-Mail**, **Kalender** oder **beides**) und **wann**:
+* **zum Fälligkeitstermin**: jedes Gerät einzeln zu seinem Termin, oder
+* **monatsweise gebündelt**: eine Sammelmail bzw. ein Sammeltermin am Monatsersten mit allen in diesem Monat fälligen Geräten. Überfällige Geräte erscheinen jeden Monat erneut.
+
+Kalendertermine haben jetzt eine feste ID. Ein erneuter Import oder eine automatische Kalendereinladung **aktualisiert** den vorhandenen Termin, statt ihn zu verdoppeln. Verschobene Termine wandern mit, leere Monate werden abgesagt.
+
+<img src="docs/images/65-erinnerungen-konfigurieren.png" alt="Erinnerungen konfigurieren" width="720">
+
+### Neu: Fällige Prüfungen verschieben, Prüfintervall je Gerät ändern
+* **⏭ Auf den nächsten Monat verschieben** (oder auf ein Datum): einzeln aus der Übersicht, „alle verschieben“ oder für mehrere ausgewählte Geräte in der Geräteliste. Eine Begründung landet im Änderungsprotokoll. Der ursprüngliche Termin bleibt bis zur nächsten Prüfung sichtbar (**„⏭ verschoben“**).
+* **⏱ Prüfintervall ändern** für ein oder mehrere Geräte, gespeichert **je Gerät in der Datenbank**, mit Vorschau der neuen Termine. Wahlweise wird der nächste Termin neu berechnet oder beibehalten.
+
+<img src="docs/images/61-uebersicht-verschieben.png" alt="Übersicht mit Verschieben" width="720">
+
+<img src="docs/images/62-termin-verschieben.png" alt="Termin verschieben" width="560"> <img src="docs/images/64-intervall-aendern.png" alt="Prüfintervall ändern" width="560">
+
+<img src="docs/images/71-geraet-verschoben.png" alt="Gerät mit verschobenem Termin" width="720">
+
+### Neu: RS-232-Terminal ein- und ausschaltbar
+Unter *Einstellungen → Programm* lässt sich das Terminal auf der SECUTEST-Seite abschalten. Es ist dann ausgeblendet und auch über die Schnittstelle gesperrt.
+
+<img src="docs/images/70-programm-terminal.png" alt="Einstellungen – Programm" width="720">
+
+### Verbessert
+* Einstellungen mit Unterreitern: **Allgemein · Erinnerungen · Sicherheit & Speicherort · Programm**.
+* Behoben: Die Auswahl „Qualifikation“ beim Anlegen einer Datenbank war leer.
+* Behoben: Die Warnung „Nur noch … Wiederherstellungscodes“ erschien auch ohne 2FA.
+* Das Erinnerungsskript (`npm run reminders`) fragt bei Datenbanken ohne Passwort kein Passwort mehr ab.
+* Release-Test für openSUSE gegen kurzzeitig gestörte Spiegelserver abgesichert.
+* Neue Tests für Verschlüsselung an/aus, optionale 2FA, Verschieben der Datenbank, Termine verschieben, Intervalländerung, monatliche Bündelung und Terminal-Schalter (jetzt 42 Tests).
+
 ## 1.1.0 – Pakete für alle Plattformen, „Programm beenden“
 
 ### Neu: Installationspakete für fast jedes System

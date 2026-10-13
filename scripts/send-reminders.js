@@ -17,7 +17,7 @@
 const path = require('path');
 const readline = require('readline');
 const config = require('../src/config');
-const { openDatabase } = require('../src/db/database');
+const { openDatabase, isEncryptedFile } = require('../src/db/database');
 const { runReminders } = require('../src/reminders/scheduler');
 
 function arg(name) {
@@ -51,7 +51,8 @@ async function main() {
   }
   const entry = dbs.find((d) => d.name === dbArg || d.id === dbArg);
   const file = entry ? entry.path : path.resolve(dbArg);
-  const password = process.env.SECUTEST_DB_PASSWORD || (await askHidden(`Passwort für ${path.basename(file)}: `));
+  // Datenbanken ohne Passwort brauchen keine Abfrage
+  const password = !isEncryptedFile(file) ? null : process.env.SECUTEST_DB_PASSWORD || (await askHidden(`Passwort für ${path.basename(file)}: `));
   let sdb;
   try {
     sdb = openDatabase(file, password, { force: true });
