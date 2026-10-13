@@ -1,0 +1,10 @@
+node_modules/
+*.secudb
+*.secudb-journal
+*.lock
+.env
+data/
+npm-debug.log*
+.DS_Store
+dist/
+coverage/

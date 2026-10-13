@@ -1,0 +1,45 @@
+MIT License
+
+Copyright (c) 2026 Die Mitwirkenden des Projekts „Secutest Prüfmanager“
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+-------------------------------------------------------------------------------
+Sicherheitshinweis und Haftungsausschluss (deutsch)
+-------------------------------------------------------------------------------
+
+Prüfungen nach DIN VDE 0701/0702 (DIN EN 50678 / DIN EN 50699) sowie alle
+Arbeiten an elektrischen Anlagen und Geräten dürfen nur von Elektrofachkräften
+bzw. elektrotechnisch unterwiesenen Personen unter Leitung und Aufsicht einer
+Elektrofachkraft durchgeführt werden. Elektrischer Strom ist lebensgefährlich.
+
+Diese Software ist ein freies Open-Source-Projekt und wird „wie besehen“ ohne
+jegliche Gewährleistung bereitgestellt. Sie kann Fehler enthalten – insbesondere
+bei Grenzwerten, Bewertungen, der Kommunikation mit dem Prüfgerät und den
+grafischen Anleitungen. Sie ersetzt weder die Bedienungsanleitung des Prüfgeräts
+noch die geltenden Normen und Vorschriften (z. B. DGUV Vorschrift 3) oder die
+fachliche Beurteilung durch die verantwortliche Elektrofachkraft.
+
+Die Autoren und Mitwirkenden übernehmen – soweit gesetzlich zulässig – keinerlei
+Haftung für Personen-, Sach- oder Vermögensschäden, die direkt oder indirekt
+durch die Nutzung, Fehlfunktion oder fehlerhafte Ergebnisse dieser Software
+entstehen. Die Nutzung erfolgt ausschließlich auf eigene Verantwortung.
+
+Gossen Metrawatt und SECUTEST sind Marken der jeweiligen Inhaber. Dieses
+Projekt ist unabhängig und steht in keiner Verbindung zur GMC-I Messtechnik GmbH.

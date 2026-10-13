@@ -1,0 +1,120 @@
+name: Release
+
+# Bei jeder Änderung auf main: testen, portable Pakete bauen, auf allen
+# Betriebssystemen starten (Selbsttest) und als GitHub-Release veröffentlichen.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Pakete bauen (Windows, macOS, Linux inkl. Node.js)
+        run: node scripts/build-release.js
+      - id: v
+        run: echo "version=$(cat dist/release/VERSION.txt)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: dist/release/
+          retention-days: 7
+
+  smoke:
+    name: Selbsttest ${{ matrix.target }}
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, target: windows-x64, ext: zip }
+          - { os: macos-latest, target: macos-arm64, ext: zip }
+          - { os: ubuntu-latest, target: linux-x64, ext: tar.gz }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: release
+      - name: Entpacken (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Expand-Archive -Path "release/Secutest-Pruefmanager-${{ needs.build.outputs.version }}-${{ matrix.target }}.zip" -DestinationPath bundle
+      - name: Entpacken (macOS)
+        if: runner.os == 'macOS'
+        run: mkdir bundle && unzip -q "release/Secutest-Pruefmanager-${{ needs.build.outputs.version }}-${{ matrix.target }}.zip" -d bundle
+      - name: Entpacken (Linux)
+        if: runner.os == 'Linux'
+        run: mkdir bundle && tar -xzf "release/Secutest-Pruefmanager-${{ needs.build.outputs.version }}-${{ matrix.target }}.tar.gz" -C bundle
+      - name: Selbsttest mit gebündeltem Node.js
+        shell: bash
+        run: |
+          cd "bundle/Secutest-Pruefmanager-${{ needs.build.outputs.version }}-${{ matrix.target }}"
+          if [ -f runtime/node.exe ]; then NODE=runtime/node.exe; else NODE=runtime/node; fi
+          cd app && "../$NODE" src/server.js --selftest
+
+  publish:
+    needs: [build, smoke]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: release
+      - name: Release-Notizen
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          cat > notes.md <<NOTES
+          ## Secutest Prüfmanager ${VERSION}
+
+          Automatisch erstellt aus Commit \`${GITHUB_SHA::7}\`.
+
+          ### Download – passendes Paket wählen, entpacken, starten
+          | System | Datei | Start |
+          |---|---|---|
+          | Windows 10/11 (64 Bit) | \`…-windows-x64.zip\` | \`Secutest-Pruefmanager.cmd\` doppelklicken |
+          | macOS Apple Silicon (M1–M4) | \`…-macos-arm64.zip\` | Rechtsklick → Öffnen auf \`Secutest-Pruefmanager.command\` |
+          | macOS Intel | \`…-macos-x64.zip\` | wie oben |
+          | Linux (x64) | \`…-linux-x64.tar.gz\` | \`./Secutest-Pruefmanager.sh\` |
+
+          Node.js ist enthalten – keine Installation nötig. Ohne Prüfgerät testen: \`Simulator-ohne-Hardware\` starten.
+          Prüfsummen: \`SHA256SUMS.txt\`.
+
+          ### Änderung
+          ${COMMIT_MSG}
+
+          > ⚠ **Haftungsausschluss:** Prüfungen und Arbeiten an elektrischen Geräten dürfen nur von Elektrofachkräften durchgeführt werden. Open-Source-Software ohne Gewähr – sie kann Fehler enthalten. Keine Haftung für Personen-, Sach- oder Vermögensschäden.
+          NOTES
+      - name: GitHub-Release veröffentlichen
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          gh release create "v${VERSION}" release/* \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "Secutest Prüfmanager ${VERSION}" \
+            --notes-file notes.md \
+            --latest
