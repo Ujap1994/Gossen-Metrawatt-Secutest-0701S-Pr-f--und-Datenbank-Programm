@@ -1,0 +1,26 @@
+{
+  "name": "secutest-pruefmanager",
+  "version": "1.0.0",
+  "description": "Prüf- und Datenbankprogramm für den Gossen Metrawatt SECUTEST 0701S (DIN VDE 0701/0702) mit verschlüsselter Cloud-Datenbank, 2FA und Prüferinnerungen",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "simulator": "node src/server.js --simulator",
+    "reminders": "node scripts/send-reminders.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "private": true,
+  "dependencies": {
+    "better-sqlite3-multiple-ciphers": "^13.0.3",
+    "express": "^4.22.3",
+    "nodemailer": "^10.1.0",
+    "qrcode": "^1.5.4",
+    "serialport": "^13.0.0"
+  }
+}
