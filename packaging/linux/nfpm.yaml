@@ -1,0 +1,62 @@
+# nfpm-Konfiguration für .deb, .rpm und Arch-Pakete
+# Aufruf über scripts/build-linux-packages.js (setzt die Umgebungsvariablen)
+name: secutest-pruefmanager
+arch: ${NFPM_ARCH}
+platform: linux
+version: ${PKG_VERSION}
+release: ${PKG_RELEASE}
+version_schema: none
+section: electronics
+priority: optional
+maintainer: "Secutest Pruefmanager Contributors <noreply@localhost>"
+vendor: "Secutest Pruefmanager (Open Source)"
+license: MIT
+description: |
+  Prüf- und Datenbankprogramm für den Gossen Metrawatt SECUTEST 0701S
+  nach DIN VDE 0701/0702: RS-232-Steuerung, grafisch geführte Prüfabläufe,
+  verschlüsselte Datenbank, 2FA, Prüferinnerungen, Protokolle.
+  Open-Source-Software ohne Gewähr – Prüfungen nur durch Elektrofachkräfte.
+recommends:
+  - xdg-utils
+contents:
+  - src: ${PKG_STAGE}/
+    dst: /opt/secutest-pruefmanager
+    type: tree
+  - src: ./packaging/linux/secutest-pruefmanager.sh
+    dst: /usr/bin/secutest-pruefmanager
+    file_info:
+      mode: 0755
+  - src: ./packaging/linux/secutest-pruefmanager.desktop
+    dst: /usr/share/applications/secutest-pruefmanager.desktop
+  - src: ./packaging/icons/icon.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/secutest-pruefmanager.svg
+  - src: ./packaging/icons/icon-256.png
+    dst: /usr/share/icons/hicolor/256x256/apps/secutest-pruefmanager.png
+  - src: ./packaging/icons/icon-128.png
+    dst: /usr/share/icons/hicolor/128x128/apps/secutest-pruefmanager.png
+  - src: ${PKG_METAINFO}
+    dst: /usr/share/metainfo/io.github.pruefmanager.Secutest.metainfo.xml
+  - src: ./LICENSE
+    dst: /usr/share/licenses/secutest-pruefmanager/LICENSE
+  - src: ./LICENSE
+    dst: /usr/share/doc/secutest-pruefmanager/copyright
+scripts:
+  postinstall: ./packaging/linux/postinstall.sh
+  postremove: ./packaging/linux/postremove.sh
+# Mindestanforderung der mitgelieferten Binärdateien (SQLCipher-Modul): glibc ≥ 2.34, libstdc++ (GCC ≥ 11)
+# → Ubuntu 22.04+, Debian 12+, Fedora 35+, RHEL/Alma/Rocky 9+, openSUSE Tumbleweed/Leap 16, Arch
+overrides:
+  deb:
+    depends:
+      - libc6 (>= 2.34)
+      - libstdc++6 (>= 11)
+  rpm:
+    depends:
+      - libc.so.6(GLIBC_2.34)(64bit)
+      - libstdc++.so.6(GLIBCXX_3.4.29)(64bit)
+  archlinux:
+    depends:
+      - glibc
+      - gcc-libs
+archlinux:
+  packager: "Secutest Pruefmanager Contributors"

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.pruefmanager.Secutest</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Secutest Prüfmanager</name>
+  <summary>Geräteprüfung nach DIN VDE 0701/0702 mit dem SECUTEST 0701S</summary>
+  <description>
+    <p>Freies Prüf- und Datenbankprogramm für den Gossen Metrawatt SECUTEST 0701S/0702S: Steuerung über RS-232, grafisch geführte Prüfabläufe je Schutzklasse, verschlüsselte Datenbank (auch in der Cloud), Zwei-Faktor-Anmeldung, Prüferinnerungen per E-Mail und Kalender, Prüfprotokolle und Prüfplaketten.</p>
+    <p>Haftungsausschluss: Prüfungen und Arbeiten an elektrischen Geräten nur durch Elektrofachkräfte. Open-Source-Software ohne Gewähr, kann Fehler enthalten. Keine Haftung für Personen-, Sach- oder Vermögensschäden.</p>
+  </description>
+  <launchable type="desktop-id">secutest-pruefmanager.desktop</launchable>
+  <categories>
+    <category>Utility</category>
+    <category>Electronics</category>
+  </categories>
+  <keywords>
+    <keyword>VDE 0701</keyword>
+    <keyword>VDE 0702</keyword>
+    <keyword>Secutest</keyword>
+    <keyword>DGUV</keyword>
+  </keywords>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="@VERSION@" date="@DATE@"/>
+  </releases>
+</component>
