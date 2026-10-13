@@ -34,7 +34,7 @@ test.before(async () => {
 
 test.after(async () => {
   await secutest.disconnect().catch(() => {});
-  sessions.lock('Testende'); // Datenbank schließen (Windows sperrt geöffnete Dateien)
+  sessions.closeAll('Testende'); // Datenbank schließen (Windows sperrt geöffnete Dateien)
   await new Promise((r) => server.close(r));
   fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 });

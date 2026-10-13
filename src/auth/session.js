@@ -197,6 +197,13 @@ class SessionManager {
     return this._activate(dbEntry, sdb);
   }
 
+  /** Beim Beenden: alle Datenbanken schließen – auch die einer begonnenen, noch nicht abgeschlossenen Anmeldung. */
+  closeAll(reason = 'Programm beendet') {
+    for (const t of [...this.pending.keys()]) this._closePending(t);
+    this.setups.clear();
+    this.lock(reason);
+  }
+
   lock(reason = 'Gesperrt') {
     if (!this.active) return;
     const a = this.active;

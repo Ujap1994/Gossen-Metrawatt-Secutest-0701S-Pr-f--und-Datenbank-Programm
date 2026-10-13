@@ -174,7 +174,7 @@ async function main() {
     if (stopping) return;
     stopping = true;
     console.log(`\n${reason} …`);
-    sessions.lock(reason);
+    sessions.closeAll(reason);
     await secutest.disconnect().catch(() => {});
     secutest.stopWatcher();
     if (server) server.close(() => process.exit(0));

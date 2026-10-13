@@ -36,7 +36,7 @@ test.before(async () => {
 
 test.after(async () => {
   await secutest.disconnect().catch(() => {});
-  sessions.lock('Testende');
+  sessions.closeAll('Testende');
   await new Promise((r) => server.close(r));
   fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 });
@@ -190,4 +190,10 @@ test('Ohne Passwort, aber mit 2FA: Datei unverschlüsselt, Anmeldung verlangt de
   const u = await call('POST', '/unlock', { dbId: entry.id, password: '' });
   assert.ok(u.body.pendingToken, 'ohne Passwort, aber 2FA-Abfrage');
   assert.equal((await call('GET', '/devices')).status, 401, 'noch nicht angemeldet');
+  // Beenden schließt auch die Datenbank einer angefangenen Anmeldung (Windows sperrt offene Dateien)
+  assert.equal(sessions.pending.size, 1);
+  assert.ok(fs.existsSync(path.join(folder, 'Nachbar.secudb.lock')));
+  sessions.closeAll('Test');
+  assert.equal(sessions.pending.size, 0);
+  assert.ok(!fs.existsSync(path.join(folder, 'Nachbar.secudb.lock')), 'Datei geschlossen, Sperrdatei entfernt');
 });
