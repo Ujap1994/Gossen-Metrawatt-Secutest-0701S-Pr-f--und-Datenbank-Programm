@@ -52,6 +52,9 @@ function createApp({ sessions = new SessionManager(), scheduler = new ReminderSc
 
   app.use(express.json({ limit: '14mb' }));
 
+  // QR-Erkennung (jsQR, Apache-2.0) für Browser ohne eingebauten BarcodeDetector (Firefox, Safari)
+  app.get('/vendor/jsQR.js', (req, res) => res.sendFile(require.resolve('jsqr/dist/jsQR.js')));
+
   // CSRF-Schutz: schreibende API-Aufrufe nur mit eigenem Header (kann eine fremde Webseite nicht setzen)
   app.use('/api', (req, res, next) => {
     if (req.method !== 'GET' && req.method !== 'HEAD' && req.get('X-Requested-With') !== 'secutest') {

@@ -6,13 +6,20 @@
  *  - neuester Abschnitt aus CHANGELOG.md – inkl. Bilder (relative Pfade → raw.githubusercontent-URLs)
  *  - Haftungsausschluss
  *
- *   node scripts/release-notes.js <version> <release-ordner>
+ *   node scripts/release-notes.js <version> <release-ordner>          Notizen ausgeben
+ *   node scripts/release-notes.js <version> <release-ordner> --check  prüfen, ob alle Pflichtpakete da sind
+ *
+ * Die Download-Tabelle enthält nur Dateien, die wirklich im Release liegen. Pflichtpakete müssen
+ * vorhanden sein, sonst wird nicht veröffentlicht; optionale (eigene Build-Schritte, die ausnahmsweise
+ * scheitern können) werden andernfalls unter „Diesmal nicht enthalten“ genannt.
  */
 const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
-const [version = 'lokal', dir = path.join(ROOT, 'dist', 'release')] = process.argv.slice(2);
+const args = process.argv.slice(2).filter((a) => !a.startsWith('--'));
+const checkOnly = process.argv.includes('--check');
+const [version = 'lokal', dir = path.join(ROOT, 'dist', 'release')] = args;
 const files = fs.existsSync(dir) ? fs.readdirSync(dir) : [];
 const repo = process.env.GITHUB_REPOSITORY || '';
 const sha = process.env.GITHUB_SHA || 'main';
@@ -32,10 +39,10 @@ const PACKAGES = [
   ['Arch Linux ARM (aarch64)', /-aarch64\.pkg\.tar\.zst$/, '`sudo pacman -U <datei>`'],
   ['Alpine Linux / postmarketOS (x64)', /_x86_64\.apk$/, '`sudo apk add --allow-untrusted <datei>.apk` (nutzt `nodejs` der Distribution)'],
   ['Alpine Linux / postmarketOS (ARM64)', /_aarch64\.apk$/, '`sudo apk add --allow-untrusted <datei>.apk`'],
-  ['Snap (Ubuntu & alle Distributionen mit snapd, x64)', /\.snap$/, '`sudo snap install --dangerous --classic <datei>.snap`'],
-  ['Flatpak (alle Distributionen, x64)', /\.flatpak$/, '`flatpak install --user <datei>.flatpak`'],
+  ['Snap (Ubuntu & alle Distributionen mit snapd, x64)', /\.snap$/, '`sudo snap install --dangerous --classic <datei>.snap`', false],
+  ['Flatpak (alle Distributionen, x64)', /\.flatpak$/, '`flatpak install --user <datei>.flatpak`', false],
   ['AppImage (alle Distributionen, x64)', /-x86_64\.AppImage$/, '`chmod +x <datei>` und starten'],
-  ['AppImage (ARM64)', /-aarch64\.AppImage$/, '`chmod +x <datei>` und starten'],
+  ['AppImage (ARM64)', /-aarch64\.AppImage$/, '`chmod +x <datei>` und starten', false],
   ['Linux portabel (x64)', /-linux-x64\.tar\.gz$/, '`tar xzf …` → `./Secutest-Pruefmanager.sh`'],
   ['Linux portabel (ARM64)', /-linux-arm64\.tar\.gz$/, '`tar xzf …` → `./Secutest-Pruefmanager.sh`'],
   ['Linux portabel, musl (x64, z. B. Void musl)', /-linux-musl-x64\.tar\.gz$/, 'Node.js ≥ 20 installieren → `./Secutest-Pruefmanager.sh`'],
@@ -62,6 +69,18 @@ const rows = PACKAGES.map(([sys, re, how]) => {
   const f = find(re);
   return f ? `| ${sys} | \`${f}\` | ${how} |` : null;
 }).filter(Boolean);
+const missing = PACKAGES.filter(([, re]) => !find(re));
+const missingRequired = missing.filter(([, , , required = true]) => required);
+
+if (checkOnly) {
+  console.log(`${PACKAGES.length - missing.length} von ${PACKAGES.length} Paketen vorhanden.`);
+  for (const [sys, , , required = true] of missing) console.log(`  ${required ? '✘ FEHLT (Pflicht)' : '– fehlt (optional)'}: ${sys}`);
+  if (missingRequired.length) {
+    console.error(`\nNicht veröffentlichen: ${missingRequired.length} Pflichtpaket(e) fehlen.`);
+    process.exit(1);
+  }
+  process.exit(0);
+}
 
 const out = `## Secutest Prüfmanager ${version}
 
@@ -73,7 +92,7 @@ ${latestChangelog()}
 | System | Datei | Installation / Start |
 |---|---|---|
 ${rows.join('\n')}
-
+${missing.length ? `\n_Diesmal nicht enthalten (Build-Schritt fehlgeschlagen): ${missing.map(([sys]) => sys).join(', ')}._\n` : ''}
 Node.js ist in allen Paketen enthalten – keine weitere Installation nötig (Ausnahme: Alpine/musl nutzen das Node.js der Distribution). Ohne Prüfgerät testen: „Simulator-ohne-Hardware“ starten bzw. \`secutest-pruefmanager --simulator\`.
 Linux: Für den USB-RS232-Adapter den Benutzer in die Gruppe \`dialout\` (Arch: \`uucp\`) aufnehmen. Prüfsummen: \`SHA256SUMS.txt\`.
 `;

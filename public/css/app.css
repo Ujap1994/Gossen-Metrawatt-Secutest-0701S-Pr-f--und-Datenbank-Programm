@@ -300,3 +300,27 @@ ol.instr li { margin-bottom: 6px; }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; font-weight: 500; }
 .empty { text-align: center; color: var(--muted); padding: 30px 10px; }
+
+/* ---------- QR-Scanner ---------- */
+.scan-cam { position: relative; aspect-ratio: 4 / 3; background: #0d1620; border-radius: var(--radius); overflow: hidden; display: grid; place-items: center; }
+.scan-video { width: 100%; height: 100%; object-fit: cover; }
+.scan-hint { color: #9fb0c2; }
+.scan-frame { position: absolute; inset: 18% 22%; border: 3px solid rgba(255, 255, 255, 0.85); border-radius: 14px; box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.25); pointer-events: none; }
+.scan-result { margin-top: 14px; border-left: 4px solid var(--ok); }
+
+/* ---------- Serienprüfung ---------- */
+.series-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 14px; margin-bottom: 12px; border-radius: var(--radius); background: var(--primary-soft); border: 1px solid color-mix(in srgb, var(--primary) 35%, var(--border)); }
+.series-bar .dots { display: flex; gap: 4px; flex-wrap: wrap; }
+.series-bar .dots span { width: 12px; height: 12px; border-radius: 50%; background: var(--border); }
+.series-bar .dots span.ok { background: var(--ok); }
+.series-bar .dots span.bad { background: var(--bad); }
+.series-bar .dots span.skip { background: var(--muted); }
+.series-bar .dots span.cur { outline: 2px solid var(--primary); outline-offset: 1px; }
+
+/* ---------- Kalibrierung / Vorschlag ---------- */
+.cal-state { font-weight: 700; }
+.cal-state.ok { color: var(--ok); }
+.cal-state.soon { color: var(--warn); }
+.cal-state.overdue { color: var(--bad); }
+.suggest-box { border: 1px dashed color-mix(in srgb, var(--primary) 45%, var(--border)); border-radius: var(--radius); padding: 10px 12px; background: var(--surface-2); }
+.suggest-box ul { margin: 6px 0 0; padding-left: 18px; }

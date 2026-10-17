@@ -131,13 +131,46 @@ export async function intervalDialog(devices) {
     { onchange: () => render() }
   );
   const preview = h('div', { class: 'preview-list' });
+  // DGUV-V3-Vorschlag je Gerät (Map id → Vorschlag); null = ein Intervall für alle
+  let suggestions = null;
+  const suggestBtn = h('button', { type: 'button', class: 'btn sm', onclick: () => toggleSuggest() }, '💡 Vorschlag nach DGUV V3 je Gerät');
+  const suggestNote = h('div', { class: 'small muted' });
+  async function toggleSuggest() {
+    if (suggestions) {
+      suggestions = null;
+      suggestBtn.textContent = '💡 Vorschlag nach DGUV V3 je Gerät';
+      sel.disabled = months.disabled = false;
+      suggestNote.textContent = '';
+      return render();
+    }
+    try {
+      const list = await post('/devices/interval-suggestions', { ids: devices.map((d) => d.id) });
+      suggestions = new Map(list.map((x) => [x.id, x]));
+      suggestBtn.textContent = '✕ Vorschlag verwerfen (ein Intervall für alle)';
+      sel.disabled = months.disabled = true;
+      suggestNote.textContent = 'Vorschlag nach Einsatzbereich und Fehlerquote der Datenbank (DGUV Vorschrift 3, Tab. 1B; Privathaushalt: Empfehlung). Ohne Gewähr – maßgeblich ist die Gefährdungsbeurteilung.';
+      render();
+    } catch (e) {
+      toast(e.message, 'bad');
+    }
+  }
+  const monthsFor = (d) => (suggestions ? suggestions.get(d.id)?.months : Number(months.value));
   function render() {
-    const m = Number(months.value);
     fill(
       preview,
       devices.map((d) => {
+        const m = monthsFor(d);
         const to = recalc.value === 'yes' && m >= 1 && d.last_inspection_date && d.last_result === 'bestanden' ? addMonths(d.last_inspection_date, m) : d.next_due_date;
-        return h('div', {}, h('b', {}, d.inventory_no), ` ${d.name}: ${d.interval_months} → ${m || '?'} Monate · nächste Prüfung `, to ? h('b', {}, fmt.date(to)) : 'offen', to !== d.next_due_date && d.next_due_date ? h('span', { class: 'muted' }, ` (bisher ${fmt.date(d.next_due_date)})`) : null);
+        const sg = suggestions?.get(d.id);
+        return h(
+          'div',
+          {},
+          h('b', {}, d.inventory_no),
+          ` ${d.name}: ${d.interval_months} → ${m || '?'} Monate · nächste Prüfung `,
+          to ? h('b', {}, fmt.date(to)) : 'offen',
+          to !== d.next_due_date && d.next_due_date ? h('span', { class: 'muted' }, ` (bisher ${fmt.date(d.next_due_date)})`) : null,
+          sg ? h('div', { class: 'small muted' }, `💡 ${sg.envLabel}: ${sg.reasons.slice(1).join(' ') || sg.reasons[0]}`) : null
+        );
       })
     );
   }
@@ -145,19 +178,35 @@ export async function intervalDialog(devices) {
   const r = await modal({
     title: devices.length === 1 ? `Prüfintervall ändern – ${devices[0].name}` : `Prüfintervall für ${devices.length} Geräte ändern`,
     wide: true,
-    body: h('div', { class: 'stack' }, h('div', { class: 'grid c2' }, field('Vorschlag', sel), field('Intervall in Monaten (1–120)', months)), recalc, field('Vorschau', preview), h('p', { class: 'small muted' }, 'Das Intervall wird je Gerät in der Datenbank gespeichert. Das Standard-Intervall für neue Geräte steht in den Einstellungen.')),
+    body: h('div', { class: 'stack' }, h('div', { class: 'grid c2' }, field('Vorschlag', sel), field('Intervall in Monaten (1–120)', months)), h('div', {}, suggestBtn, suggestNote), recalc, field('Vorschau', preview), h('p', { class: 'small muted' }, 'Das Intervall wird je Gerät in der Datenbank gespeichert. Das Standard-Intervall für neue Geräte steht in den Einstellungen.')),
     actions: [
       { label: 'Abbrechen', value: null },
       {
         label: 'Übernehmen',
         class: 'primary',
         onClick: async () => {
-          const m = Number(months.value);
-          if (!(m >= 1 && m <= 120)) {
-            months.classList.add('invalid');
-            return false;
-          }
           try {
+            if (suggestions) {
+              // je vorgeschlagenem Intervall ein Aufruf
+              const groups = new Map();
+              for (const d of devices) {
+                const m = monthsFor(d);
+                if (!groups.has(m)) groups.set(m, []);
+                groups.get(m).push(d.id);
+              }
+              const all = { devices: [], invite: null };
+              for (const [m, ids] of groups) {
+                const r = await post('/devices/interval', { ids, months: m, recalc: recalc.value === 'yes' });
+                all.devices.push(...r.devices);
+                all.invite = r.invite || all.invite;
+              }
+              return all;
+            }
+            const m = Number(months.value);
+            if (!(m >= 1 && m <= 120)) {
+              months.classList.add('invalid');
+              return false;
+            }
             return await post('/devices/interval', { ids: devices.map((d) => d.id), months: m, recalc: recalc.value === 'yes' });
           } catch (e) {
             toast(e.message, 'bad', 6000);

@@ -33,6 +33,7 @@ export async function renderSettings({ navigate }) {
   const profile = select(meta.profiles.map((p) => [p.id, p.name]), s.limitProfile);
   const std = select([['VDE 0702', 'DIN VDE 0702 (Wiederholungsprüfung)'], ['VDE 0701', 'DIN VDE 0701 (nach Instandsetzung)']], s.defaultStandard);
   const corr = h('input', { type: 'checkbox', checked: s.manualDisplayCorrection });
+  const env = select([['', '— nicht festgelegt —'], ...meta.environments.map((e) => [e.id, e.label])], s.defaultUsageEnv || '');
 
   const save = async () => {
     const patch = { owner: {}, inspector: {} };
@@ -45,6 +46,7 @@ export async function renderSettings({ navigate }) {
     patch.limitProfile = profile.value;
     patch.defaultStandard = std.value;
     patch.manualDisplayCorrection = corr.checked;
+    patch.defaultUsageEnv = env.value;
     patch.db_name = dbName.value;
     try {
       await put('/settings', patch);
@@ -65,7 +67,7 @@ export async function renderSettings({ navigate }) {
       'fieldset',
       {},
       h('legend', {}, 'Prüfung'),
-      h('div', { class: 'grid c3' }, field('Grenzwert-Profil', profile), field('Standard-Norm', std), field('Standard-Prüfintervall für neue Geräte (Monate)', f('defaultIntervalMonths', { type: 'number', min: 1, max: 120 }), 'Bestehende Geräte: Geräte → auswählen → ⏱ Prüfintervall ändern'), field('Präfix Inventarnummer', f('inventoryPrefix')), field('Automatisch sperren nach (Minuten)', f('autoLockMinutes', { type: 'number', min: 1, max: 240 }))),
+      h('div', { class: 'grid c3' }, field('Grenzwert-Profil', profile), field('Standard-Norm', std), field('Standard-Prüfintervall für neue Geräte (Monate)', f('defaultIntervalMonths', { type: 'number', min: 1, max: 120 }), 'Bestehende Geräte: Geräte → auswählen → ⏱ Prüfintervall ändern'), field('Standard-Einsatzbereich neuer Geräte', env, 'für den Intervallvorschlag nach DGUV V3'), field('Präfix Inventarnummer', f('inventoryPrefix')), field('Automatisch sperren nach (Minuten)', f('autoLockMinutes', { type: 'number', min: 1, max: 240 }))),
       h('label', { class: 'check', style: { marginTop: '8px' } }, corr, 'Manuelle Eingabe: SECUTEST-Anzeigewerte mit Gebrauchsfehler-Tabelle bewerten (Anhang der Anleitung)')
     ),
     h('div', { class: 'row end' }, h('button', { class: 'btn primary', onclick: save }, 'Speichern'))
@@ -360,7 +362,16 @@ export async function renderSecuritySettings({ navigate }) {
 // ---------------------------------------------------------------------------
 // Einstellungen – Programm (dieser Rechner)
 // ---------------------------------------------------------------------------
-export async function renderProgramSettings() {
+/** Kalibrierzustand als Text (für Einstellungen, Übersicht, Prüfassistent) */
+export function calibrationText(c) {
+  if (!c || c.state === 'off') return null;
+  if (c.state === 'unknown') return 'Kalibrierdatum des SECUTEST ist noch nicht eingetragen.';
+  if (c.state === 'overdue') return `Kalibrierung des SECUTEST ist seit ${-c.daysLeft} Tag(en) überfällig (fällig am ${fmt.date(c.nextDate)}).`;
+  if (c.state === 'soon') return `Kalibrierung des SECUTEST ist in ${c.daysLeft} Tag(en) fällig (${fmt.date(c.nextDate)}).`;
+  return `Kalibriert bis ${fmt.date(c.nextDate)}.`;
+}
+
+export async function renderProgramSettings({ navigate }) {
   const st = await get('/secutest/status');
   const cfg = st.config || {};
   const terminal = h('input', { type: 'checkbox', checked: cfg.terminal !== false });
@@ -375,6 +386,59 @@ export async function renderProgramSettings() {
   };
   terminal.addEventListener('change', save);
   auto.addEventListener('change', save);
+
+  // ---------- Kalibrier-Erinnerung ----------
+  const cal = await get('/secutest/calibration');
+  const calOn = h('input', { type: 'checkbox', checked: cal.enabled });
+  const lastDate = input({ type: 'date', value: cal.lastDate || '', max: fmt.today() });
+  const interval = select([[12, '12 Monate (übliche Empfehlung)'], [24, '24 Monate'], [36, '36 Monate'], [6, '6 Monate']].some(([v]) => v === cal.intervalMonths) ? [[12, '12 Monate (übliche Empfehlung)'], [24, '24 Monate'], [36, '36 Monate'], [6, '6 Monate']] : [[cal.intervalMonths, `${cal.intervalMonths} Monate`], [12, '12 Monate (übliche Empfehlung)'], [24, '24 Monate'], [36, '36 Monate']], cal.intervalMonths);
+  const warnDays = input({ type: 'number', min: 0, max: 180, value: cal.warnDays, style: { maxWidth: '110px' } });
+  const deviceId = input({ value: cal.deviceId, placeholder: 'vom Typschild oder per IDN?' });
+  const calNo = input({ value: cal.calibrationNo, placeholder: 'z. B. 05', style: { maxWidth: '120px' } });
+  const lab = input({ value: cal.lab, placeholder: 'Kalibrierlabor / Zertifikat-Nr. (optional)' });
+  const calFields = h('div', { class: 'stack' });
+  const stateBox = h('div');
+  const drawState = (c) => {
+    const txt = calibrationText(c);
+    fill(
+      stateBox,
+      c.enabled
+        ? h('div', { class: `alert ${c.state === 'ok' ? 'ok' : c.state === 'overdue' ? 'bad' : 'warn'} small` }, h('span', { class: `cal-state ${c.state}` }, c.state === 'ok' ? '✅ ' : '⚠ '), txt, c.nextDate ? [' ', h('a', { href: '/api/secutest/calibration.ics' }, '📅 Termin in den Kalender')] : null)
+        : h('div', { class: 'small muted' }, 'Ausgeschaltet – es erscheinen keine Hinweise.'),
+      c.changedOnDevice ? h('div', { class: 'alert warn small' }, `Das verbundene SECUTEST meldet die Kalibrier-Nr. ${c.deviceCalibrationNo} (gespeichert: ${c.calibrationNo}). Wurde es neu kalibriert? Dann Datum und Nummer aktualisieren.`) : null
+    );
+    calFields.style.display = c.enabled ? '' : 'none';
+  };
+  const saveCal = async () => {
+    try {
+      const c = await put('/secutest/calibration', { enabled: calOn.checked, lastDate: lastDate.value, intervalMonths: Number(interval.value), warnDays: Number(warnDays.value), deviceId: deviceId.value, calibrationNo: calNo.value, lab: lab.value });
+      drawState(c);
+      await loadMeta();
+      toast('Kalibrierdaten gespeichert', 'ok');
+    } catch (e) {
+      toast(e.message, 'bad', 6000);
+    }
+  };
+  const fromDevice = async () => {
+    try {
+      const c = await post('/secutest/calibration/from-device');
+      deviceId.value = c.deviceId;
+      calNo.value = c.calibrationNo;
+      drawState(c);
+      toast('Geräte-ID und Kalibrier-Nr. aus dem SECUTEST übernommen', 'ok');
+    } catch (e) {
+      toast(e.message, 'bad', 6000);
+    }
+  };
+  calOn.addEventListener('change', () => (calFields.style.display = calOn.checked ? '' : 'none', saveCal()));
+  add(
+    calFields,
+    h('div', { class: 'grid c3' }, field('Letzte Kalibrierung am', lastDate, 'Datum auf Kalibrierschein bzw. Prüfmarke'), field('Kalibrierintervall', interval, 'Herstellerempfehlung bzw. eigene Festlegung'), field('Vorwarnung (Tage vorher)', warnDays)),
+    h('div', { class: 'grid c3' }, field('Geräte-ID / Seriennummer', deviceId), field('Kalibrier-Nr. (IDN „AC“)', calNo), field('Labor / Zertifikat', lab)),
+    h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: saveCal }, 'Speichern'), h('button', { class: 'btn', onclick: fromDevice, disabled: !st.connected, title: st.connected ? '' : 'SECUTEST nicht verbunden' }, '📟 Geräte-ID & Kalibrier-Nr. aus SECUTEST übernehmen'))
+  );
+  drawState(cal);
+
   return h(
     'div',
     {},
@@ -382,8 +446,17 @@ export async function renderProgramSettings() {
     h(
       'div',
       { class: 'card stack' },
+      h('h2', {}, '📏 Kalibrierung des SECUTEST'),
+      h('p', { class: 'small muted' }, 'Messgeräte für die Prüfung nach DIN VDE 0701-0702 müssen regelmäßig kalibriert werden. Mit eingeschalteter Erinnerung warnt das Programm in der Übersicht und vor jeder Prüfung rechtzeitig, und der Kalibrierstand erscheint im Prüfprotokoll.'),
+      h('label', { class: 'check' }, calOn, h('b', {}, 'Kalibrier-Erinnerung einschalten')),
+      stateBox,
+      calFields
+    ),
+    h(
+      'div',
+      { class: 'card stack', style: { marginTop: '14px' } },
       h('h2', {}, '📟 SECUTEST-Schnittstelle'),
-      h('p', { class: 'small muted' }, 'Diese Einstellungen gelten für dieses Programm auf diesem Rechner (nicht je Datenbank).'),
+      h('p', { class: 'small muted' }, 'Diese Einstellungen gelten für dieses Programm auf diesem Rechner (nicht je Datenbank) – ebenso die Kalibrierdaten oben.'),
       h('label', { class: 'check' }, terminal, h('span', {}, h('b', {}, 'RS-232-Terminal anzeigen'), h('div', { class: 'small muted' }, 'Freie Befehle an das SECUTEST senden (für Fehlersuche und Fortgeschrittene). Ausgeschaltet ist das Terminal auf der SECUTEST-Seite ausgeblendet und gesperrt.'))),
       h('label', { class: 'check' }, auto, h('span', {}, h('b', {}, 'USB-RS232-Adapter automatisch erkennen und verbinden'), h('div', { class: 'small muted' }, 'Eingesteckte Adapter werden angepingt; antwortet ein SECUTEST, wird verbunden.'))),
       h('p', { class: 'small' }, 'Weitere Schnittstellen-Einstellungen (Adresse, Timeout, Schalterstellungen) findest du auf der ', h('a', { href: '#/secutest' }, 'SECUTEST-Seite'), '.')

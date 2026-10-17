@@ -28,14 +28,15 @@ Es geht auch **ganz ohne Prüfgerät**: Messwerte lassen sich von Hand eintragen
 7. [Grafische Schritt-Erklärungen](#grafische-schritt-erklärungen)
 8. [Grenzwerte & Bewertung](#grenzwerte--bewertung)
 9. [Nicht bestanden – was nun?](#nicht-bestanden--was-nun)
-10. [Datenbanken, Cloud & Sicherheit](#datenbanken-cloud--sicherheit)
-11. [Prüferinnerungen per E-Mail & Kalender](#prüferinnerungen-per-e-mail--kalender)
-12. [Protokolle, Prüfplaketten, Export](#protokolle-prüfplaketten-export)
-13. [Gespeicherte Daten](#gespeicherte-daten)
-14. [Entwicklung & automatische Releases](#entwicklung--automatische-releases)
-15. [Ideen für weitere Funktionen](#ideen-für-weitere-funktionen)
-16. [Fehlerbehebung (FAQ)](#fehlerbehebung-faq)
-17. [Haftungsausschluss](#haftungsausschluss) · [Lizenz](#lizenz)
+10. [Arbeitshilfen: Plakette scannen, Serienprüfung, Intervallvorschlag, Kalibrierung](#arbeitshilfen-plakette-scannen-serienprüfung-intervallvorschlag-kalibrierung)
+11. [Datenbanken, Cloud & Sicherheit](#datenbanken-cloud--sicherheit)
+12. [Prüferinnerungen per E-Mail & Kalender](#prüferinnerungen-per-e-mail--kalender)
+13. [Protokolle, Prüfplaketten, Export](#protokolle-prüfplaketten-export)
+14. [Gespeicherte Daten](#gespeicherte-daten)
+15. [Entwicklung & automatische Releases](#entwicklung--automatische-releases)
+16. [Ideen für weitere Funktionen](#ideen-für-weitere-funktionen)
+17. [Fehlerbehebung (FAQ)](#fehlerbehebung-faq)
+18. [Haftungsausschluss](#haftungsausschluss) · [Lizenz](#lizenz)
 
 ---
 
@@ -53,7 +54,10 @@ Es geht auch **ganz ohne Prüfgerät**: Messwerte lassen sich von Hand eintragen
 | **Maßnahmen** | Ist ein Gerät durchgefallen, wählst du aus einer Liste, wie es weitergeht (sperren, reparieren, Leitung tauschen, ausmustern …). Der Gerätestatus wird automatisch gesetzt |
 | **Datenbank** | SQLite, auf Wunsch verschlüsselt mit **SQLCipher (AES-256)**. Liegt **lokal**, in **OneDrive**, **iCloud Drive** oder einem eigenen Ordner und lässt sich jederzeit **verschieben**. Beliebig viele, voneinander getrennte Datenbanken, z. B. für Bekannte |
 | **Anmeldung** | **Passwort** und **Zwei-Faktor-Code (TOTP)** aus Bitwarden, Microsoft oder Google Authenticator, Aegis, 2FAS … – beides **optional** und jederzeit in den Einstellungen ein- und ausschaltbar. Dazu Wiederherstellungscodes und automatische Sperre bei Inaktivität |
-| **Prüftermine** | Prüfdatum wird automatisch eingetragen und der nächste Termin aus dem Prüfintervall berechnet. Fällige Prüfungen lassen sich **auf den nächsten Monat verschieben**, das **Prüfintervall** wird je Gerät gespeichert – auch für mehrere Geräte auf einmal |
+| **Prüftermine** | Prüfdatum wird automatisch eingetragen und der nächste Termin aus dem Prüfintervall berechnet. Fällige Prüfungen lassen sich **auf den nächsten Monat verschieben**, das **Prüfintervall** wird je Gerät gespeichert – auch für mehrere Geräte auf einmal, mit **Intervallvorschlag nach DGUV Vorschrift 3** (Einsatzbereich und Fehlerquote) |
+| **Plakette scannen** | QR-Code der Prüfplakette per **Kamera**, **USB-Handscanner** oder **Foto** lesen – das Gerät öffnet sich oder die Prüfung startet sofort |
+| **Serienprüfung** | Gleiche Geräte **mehrfach anlegen** und nacheinander prüfen; Einstellungen und (auf Wunsch) Sichtprüfung werden vom Vorgänger übernommen, am Ende Plaketten für alle |
+| **Prüfmittel** | **Kalibrier-Erinnerung** für das SECUTEST (ein-/ausschaltbar): Warnung vor Ablauf, Kalibrierstand im Prüfprotokoll |
 | **Erinnerungen** | Wahlweise per **E-Mail**, per **Kalender** oder beides – **zum Fälligkeitstermin je Gerät** oder **monatsweise gebündelt**. Kalendertermine (.ics) mit Alarm, automatische Kalendereinladungen nach Änderungen |
 | **Dokumentation** | Druckfertiges **Prüfprotokoll** (PDF über den Browser), **Prüfplaketten mit QR-Code**, Fotos und PDFs pro Gerät, Änderungsprotokoll, Export als CSV und JSON |
 | **Plattformen** | Windows (x64, ARM64), macOS (Universal, Apple Silicon, Intel), Linux als .deb, .rpm, Arch, Alpine (.apk), Snap, Flatpak, AppImage und tar.gz (x64, ARM64, auch musl). Mit integriertem Node.js (Alpine/musl: Node.js der Distribution) |
@@ -80,6 +84,8 @@ Es geht auch **ganz ohne Prüfgerät**: Messwerte lassen sich von Hand eintragen
 ### Fertige Pakete (empfohlen)
 
 Bei jeder Änderung baut und testet GitHub automatisch ein neues Release. Unter **[Releases → neueste Version](../../releases/latest)** lädst du das passende Paket herunter. Node.js ist überall **enthalten**, du musst nichts weiter installieren.
+
+Die folgenden Pakete werden bei jedem Release gebaut und getestet. Maßgeblich ist die **Download-Tabelle im jeweiligen Release**: Sie nennt genau die Dateien, die dort liegen. Fehlt ein Pflichtpaket, wird gar nicht veröffentlicht. Flatpak, Snap und das ARM64-AppImage entstehen in eigenen Build-Schritten; scheitert einer davon ausnahmsweise, steht das im Release unter „Diesmal nicht enthalten“.
 
 | System | Datei | Installation / Start |
 |---|---|---|
@@ -318,6 +324,50 @@ Gesperrte Geräte erscheinen rot in Übersicht und Liste. Auch ihre Prüfplakett
 
 ---
 
+## Arbeitshilfen: Plakette scannen, Serienprüfung, Intervallvorschlag, Kalibrierung
+
+### 📷 Prüfplakette scannen
+Menü **Plakette scannen**: QR-Code der Prüfplakette mit der **Webcam** bzw. eingebauten Kamera lesen, mit einem **USB-Handscanner** (arbeitet wie eine Tastatur – auch Inventar- oder Seriennummer eintippen geht) oder aus einem **Foto**. Danach wahlweise *Gerät anzeigen*, *gleich prüfen* oder *hier bleiben* und die nächste Plakette scannen. Der QR-Code neuer Plaketten enthält eine kurze Kennung der Datenbank – gehört eine Plakette zu einer anderen Datenbank, sagt das Programm das. Das Kamerabild bleibt auf dem Rechner.
+
+<img src="docs/images/82-plakette-scannen.png" alt="Plakette scannen" width="800">
+
+### 🔁 Serienprüfung gleicher Geräte
+1. Im Gerätedetail **⧉× Mehrfach anlegen**: z. B. aus einer Verlängerungsleitung zehn identische machen (eigene Inventarnummern, auf Wunsch „#1“, „#2“ …) – oder in der Geräteliste mehrere Geräte auswählen.
+2. **▶ Serienprüfung** starten: Die Geräte werden nacheinander geprüft. Prüfablauf, Durchführung, Norm, Grenzwerte und Prüfer kommen vom vorherigen Gerät, die Sichtprüfung lässt sich vorausfüllen – mit dem Hinweis, jeden Punkt am Gerät zu kontrollieren. Eine Leiste zeigt den Fortschritt, Geräte lassen sich überspringen.
+3. Am Ende: Übersicht aller Ergebnisse und **Prüfplaketten für alle bestandenen Geräte** auf einen Klick.
+
+<table>
+<tr>
+<td><img src="docs/images/84-serienpruefung-start.png" alt="Serienprüfung starten" width="420"><br><sub>Fortschrittsleiste und übernommene Einstellungen</sub></td>
+<td><img src="docs/images/85-serienpruefung-sicht-uebernommen.png" alt="Sichtprüfung übernommen" width="420"><br><sub>Sichtprüfung vom Vorgänger – am Gerät kontrollieren</sub></td>
+</tr>
+<tr>
+<td><img src="docs/images/83-mehrfach-anlegen.png" alt="Mehrfach anlegen" width="420"><br><sub>Gleiche Geräte mehrfach anlegen</sub></td>
+<td><img src="docs/images/86-serienpruefung-ergebnis.png" alt="Ergebnis der Serie" width="420"><br><sub>Ergebnis und Plaketten für alle</sub></td>
+</tr>
+</table>
+
+### 💡 Intervallvorschlag nach DGUV Vorschrift 3
+Jedes Gerät hat einen **Einsatzbereich** (Standard für neue Geräte in den Einstellungen). Der Knopf **💡 Vorschlag nach DGUV V3** im Geräteformular bzw. im Dialog „Prüfintervall ändern“ (dort je Gerät) schlägt das Intervall nach DGUV Vorschrift 3, Durchführungsanweisung zu § 5, **Tabelle 1B** vor:
+
+| Einsatzbereich | Richtwert | Maximalwert bei Fehlerquote < 2 % |
+|---|---|---|
+| Baustelle, Montage, Außeneinsatz | 3 Monate | 1 Jahr |
+| Werkstatt, Fertigung, Lager, Landwirtschaft, gewerbliche Küche | 6 Monate | 1 Jahr |
+| Büro, Verwaltung, Schule, Praxis, Hotelzimmer | 6 Monate | 2 Jahre |
+| Privathaushalt (keine DGUV-Pflicht – Empfehlung) | 12 Monate | 2 Jahre |
+
+Die **Fehlerquote** berechnet das Programm aus den Prüfungen der letzten 24 Monate im selben Einsatzbereich (mindestens 10 Prüfungen, sonst gilt der Richtwert). Geräte, die schon einmal durchgefallen sind, bleiben beim Richtwert; Verlängerungsleitungen erhalten höchstens 12 Monate, Heizgeräte im Haushalt 12 Monate. Jeder Vorschlag nennt seine Begründung – **ohne Gewähr**, maßgeblich ist die Gefährdungsbeurteilung des Betreibers (BetrSichV, TRBS 1201).
+
+<img src="docs/images/87-dguv-vorschlag-geraet.png" alt="Vorschlag im Geräteformular" width="49%"> <img src="docs/images/88-dguv-vorschlag-mehrere.png" alt="Vorschlag für mehrere Geräte" width="49%">
+
+### 📏 Kalibrierung des SECUTEST
+Unter *Einstellungen → Programm* lässt sich die **Kalibrier-Erinnerung ein- und ausschalten**: letzte Kalibrierung, Intervall (üblich 12 Monate), Vorwarnzeit, Geräte-ID, Kalibrier-Nr. und Labor/Zertifikat. Geräte-ID und Kalibrier-Nr. lassen sich per `IDN?` aus dem verbundenen Gerät übernehmen (das SECUTEST meldet die Nummer der aktuellen Kalibrierung, aber kein Datum). Ist die Erinnerung eingeschaltet, warnen Übersicht und Prüfassistent rechtzeitig, jedes Prüfprotokoll nennt den Kalibrierstand, der Termin lässt sich als `.ics` in den Kalender übernehmen, und eine neue Kalibrier-Nr. im Gerät wird erkannt. Die Daten gelten für das Prüfgerät an diesem Rechner (nicht je Datenbank).
+
+<img src="docs/images/80-kalibrierung-einstellungen.png" alt="Kalibrierung" width="49%"> <img src="docs/images/81-kalibrierung-warnung.png" alt="Kalibrier-Warnung" width="49%">
+
+---
+
 ## Datenbanken, Cloud & Sicherheit
 
 * **Eine Datei pro Datenbank** (`*.secudb`). Für jeden Bekannten legst du eine eigene, komplett getrennte Datenbank an, jeweils mit eigenem Passwort und eigener 2FA (oder ohne).
@@ -405,8 +455,8 @@ Unter *Einstellungen → Erinnerungen* legst du fest, **wie** und **wann** erinn
 
 | Tabelle | Inhalt |
 |---|---|
-| `devices` | Inventar-Nr., Bezeichnung, Hersteller, Typ, Seriennummer, Kategorie, Schutzklasse, Geräteart, Anschlussart, Phasen, Nennspannung/-leistung/-strom, Heizleistung, Leitungslänge und Querschnitt, Standort, Eigentümer, Kaufdatum, Prüfintervall, Status, Erinnerung, letzte Prüfung und Ergebnis, nächster Termin, ursprünglicher Termin und Anzahl Verschiebungen, Notizen |
-| `inspections` | Prüfdatum, Start und Ende, Norm (0701/0702), Anlass, Ablauf, Betriebsart, Schutzklasse, Grenzwertprofil, Prüfer, Ergebnis, Bewertung des SECUTEST, Maßnahme, Intervall, nächster Termin, Messgerät (IDN), Rohdaten (`PRO?`), Bemerkungen |
+| `devices` | Inventar-Nr., Bezeichnung, Hersteller, Typ, Seriennummer, Kategorie, Schutzklasse, Geräteart, Anschlussart, Phasen, Nennspannung/-leistung/-strom, Heizleistung, Leitungslänge und Querschnitt, Standort, Eigentümer, Kaufdatum, Prüfintervall, Status, Erinnerung, letzte Prüfung und Ergebnis, nächster Termin, ursprünglicher Termin und Anzahl Verschiebungen, Einsatzbereich (für den Intervallvorschlag), Notizen |
+| `inspections` | Prüfdatum, Start und Ende, Norm (0701/0702), Anlass, Ablauf, Betriebsart, Schutzklasse, Grenzwertprofil, Prüfer, Ergebnis, Bewertung des SECUTEST, Maßnahme, Intervall, nächster Termin, Messgerät (IDN) und Kalibrierstand, Rohdaten (`PRO?`), Bemerkungen |
 | `measurements` | je Messwert: Messgröße (R<sub>SL</sub>, R<sub>ISO</sub>, U<sub>ISO</sub>, I<sub>EA</sub>, I<sub>B</sub>, I<sub>Sonde</sub>, ΔI, U<sub>AC/DC</sub>, U, I, P, S, λ, W, f …), Messpunkt, Wert, Originalanzeige (z. B. `>310.0`), Einheit, Grenzwert, Vergleich, Ergebnis, Quelle |
 | `inspection_checks` | Sicht- und Funktionsprüfung je Punkt (i. O. / Mangel / entfällt) mit Notiz, entfallene Schritte mit Begründung |
 | `attachments` | Fotos und PDFs |
@@ -422,21 +472,22 @@ src/
   config.js            lokale App-Konfiguration
   auth/                TOTP (RFC 6238), Sitzungen, Wiederherstellungscodes
   db/                  SQLCipher-Datenbank, Schema/Migrationen, Cloud-Ordner, Datenzugriff
-  vde/                 Grenzwerte, Prüfabläufe je Schutzklasse, Bewertung, Maßnahmen
-  secutest/            RS-232-Protokoll, Treiber, Auto-Ping/Hot-Plug, Simulator, Manager
+  vde/                 Grenzwerte, Prüfabläufe je Schutzklasse, Bewertung, Maßnahmen, Intervallvorschlag DGUV V3
+  secutest/            RS-232-Protokoll, Treiber, Auto-Ping/Hot-Plug, Simulator, Manager, Kalibrierung
   reminders/           SMTP-Mails, iCalendar, Zeitplan
   report/              Prüfprotokoll & Prüfplaketten
   routes/              REST-API
 public/                Oberfläche (HTML/CSS/JavaScript-Module, ohne Build-Schritt)
   js/illustrations.js  SVG-Grafiken der Prüfschritte
+  js/views/scan.js     QR-Scanner für Prüfplaketten (Kamera, Handscanner, Foto)
 scripts/               build-release.js (portable Pakete), build-linux-packages.js (deb/rpm/Arch/Alpine/AppImage/Snap),
                        release-notes.js, send-reminders.js
 packaging/             Icons, Linux-Desktop-Eintrag, nfpm-Konfigurationen (glibc + Alpine), Flatpak-Manifest
 test/                  Tests (node:test) – Protokoll, TOTP, Grenzwerte, DB, Simulator, API
 ```
 
-* **Technik:** Node.js (JavaScript, kein Build-Schritt), Express, better-sqlite3-multiple-ciphers (SQLCipher), serialport, nodemailer, qrcode.
-* **Tests:** `npm test` (über 30 Tests). `npm run simulator` startet das Programm mit simuliertem SECUTEST und mehreren Szenarien, auch mit Fehlerfällen.
+* **Technik:** Node.js (JavaScript, kein Build-Schritt), Express, better-sqlite3-multiple-ciphers (SQLCipher), serialport, nodemailer, qrcode, jsQR (QR-Erkennung für Browser ohne eingebauten BarcodeDetector, Apache-2.0).
+* **Tests:** `npm test` (47 Tests). `npm run simulator` startet das Programm mit simuliertem SECUTEST und mehreren Szenarien, auch mit Fehlerfällen.
 * **CI:** Jeder Pull Request wird unter Windows, macOS und Linux getestet (`.github/workflows/ci.yml`).
 * **Releases:** Jeder Push bzw. Merge auf `main` löst `.github/workflows/release.yml` aus. Ablauf: Tests → portable Pakete für alle Plattformen bauen (`scripts/build-release.js`) → Linux-Pakete bauen (`scripts/build-linux-packages.js` mit [nfpm](https://nfpm.goreleaser.com) und appimagetool, Flatpak mit flatpak-builder, Snap mit snapcraft) → **Selbsttests** auf Windows, macOS und Linux, Installation in Ubuntu-, Debian-, Fedora-, Rocky-, openSUSE-, Arch- und Alpine-Containern, zusätzlich auf ARM64 und Intel-Mac → Veröffentlichung als GitHub-Release `v<Version>-build.<Nr>`. Die Release-Notizen kommen samt Bildern aus dem obersten Abschnitt von [`CHANGELOG.md`](CHANGELOG.md) (`scripts/release-notes.js`). Pull Requests, die das Paketieren ändern, durchlaufen dieselbe Kette ohne Veröffentlichung.
 * Pakete lokal bauen: `node scripts/build-release.js` (alle Plattformen) bzw. `--only linux-x64 --local-node`, danach `NFPM=/pfad/zu/nfpm node scripts/build-linux-packages.js`.
@@ -448,22 +499,19 @@ Beiträge sind willkommen. Bitte vor einem Pull Request `npm test` ausführen.
 
 ## Ideen für weitere Funktionen
 
-Vorschläge, die für Prüfer besonders nützlich wären:
+Vorschläge, die für Prüfer besonders nützlich wären (umgesetzt sind bereits QR-Scanner, Serienprüfung, Intervallvorschlag nach DGUV V3 und Kalibrier-Erinnerung):
 
-1. **Prüfmittelverwaltung:** Kalibrierdatum des SECUTEST hinterlegen und vor Ablauf warnen; die Kalibrierung landet im Protokoll.
-2. **Barcode/QR-Scanner:** Prüfplakette mit Handy oder USB-Scanner einlesen, und das Gerät öffnet sich direkt zur Prüfung.
-3. **Serienprüfung:** mehrere gleiche Geräte, z. B. 20 Verlängerungen, nacheinander prüfen, wobei Daten des Vorgängers übernommen werden.
-4. **Gefährdungsbeurteilung & Intervallvorschlag** nach DGUV Vorschrift 3 / TRBS 1201 (Baustelle, Werkstatt, Büro).
-5. **Kunden- und Auftragsverwaltung** mit Sammelprotokoll und Rechnung bzw. Prüfbericht für Bekannte als PDF.
-6. **Digitale Unterschrift** von Prüfer und Kunde direkt am Tablet oder mit der Maus.
-7. **Statistiken:** Ausfallquoten nach Kategorie, Hersteller und Alter, Trend der Messwerte über Jahre, etwa ein langsam steigender Ableitstrom als Frühwarnung.
-8. **Mobil-Ansicht / PWA** für Tablet-Bedienung am Prüfplatz.
-9. **Import** aus PC.doc/PS3 oder CSV, um bestehende Geräte zu übernehmen.
-10. **SECUTEST PSI** (Drucker-/Speichermodul) auslesen und Autostore-Protokolle importieren.
-11. **Sprachausgabe/Signalton** bei Grenzwertverletzung und für Schrittansagen, damit die Hände frei bleiben.
-12. **Weitere Prüfgeräte** (SECUTEST S2N+, BENNING ST 725, Fluke 6500), sofern deren Protokolle offen sind.
-13. **Hersteller-Prüfanweisungen** pro Gerätetyp als Vorlage hinterlegen.
-14. **Mehrbenutzer** mit Rollen (Prüfer/Leser) und Protokollfreigabe.
+1. **Kunden- und Auftragsverwaltung** mit Sammelprotokoll und Rechnung bzw. Prüfbericht für Bekannte als PDF.
+2. **Digitale Unterschrift** von Prüfer und Kunde direkt am Tablet oder mit der Maus.
+3. **Statistiken:** Ausfallquoten nach Kategorie, Hersteller und Alter, Trend der Messwerte über Jahre, etwa ein langsam steigender Ableitstrom als Frühwarnung.
+4. **Mobil-Ansicht / PWA** für Tablet-Bedienung am Prüfplatz (z. B. Plakette mit der Tablet-Kamera scannen).
+5. **Import** aus PC.doc/PS3 oder CSV, um bestehende Geräte zu übernehmen.
+6. **SECUTEST PSI** (Drucker-/Speichermodul) auslesen und Autostore-Protokolle importieren.
+7. **Sprachausgabe/Signalton** bei Grenzwertverletzung und für Schrittansagen, damit die Hände frei bleiben.
+8. **Weitere Prüfgeräte** (SECUTEST S2N+, BENNING ST 725, Fluke 6500), sofern deren Protokolle offen sind.
+9. **Hersteller-Prüfanweisungen** pro Gerätetyp als Vorlage hinterlegen.
+10. **Mehrbenutzer** mit Rollen (Prüfer/Leser) und Protokollfreigabe.
+11. **Kalibrier-Erinnerung per E-Mail** zusätzlich zur Warnung im Programm und zur Kalenderdatei.
 
 ---
 
