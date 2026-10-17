@@ -8,8 +8,27 @@ const config = require('../config');
 const { SecutestDriver, listPorts } = require('./driver');
 const { scan, listCandidates, PortWatcher } = require('./scanner');
 const { SCENARIOS } = require('./simulator');
-const { SWITCH_POSITIONS } = require('./protocol');
+const { SWITCH_POSITIONS, convertUnit } = require('./protocol');
 const { REMOTE, groupForMeasurementNo } = require('../vde/procedures');
+const { QUANTITIES } = require('../vde/limits');
+
+/** Das Gerät sendet die Einheit mit (z. B. kΩ statt MΩ) – auf die Einheit der Messgröße umrechnen */
+function toQuantityUnit(key, v) {
+  const q = QUANTITIES[key] || QUANTITIES[key.replace(/_(MIN|MAX|AC|DC|TRMS|LIVE)$/, '')];
+  if (!v.unit || !q || v.unit === q.unit || v.value == null) return v;
+  const value = convertUnit(v.value, v.unit, q.unit);
+  // nicht umrechenbar (falsche Größe) -> Wert verwerfen statt falsch skaliert übernehmen
+  if (value == null) return { ...v, value: null, text: `${v.text} ${v.unit}` };
+  return { ...v, value, text: `${v.qualifier || ''}${value}`, unit: q.unit };
+}
+
+/**
+ * Funktionstest: Das Gerät liefert U, I, P … auch ohne Netz an der Prüfdose (Netzspannung am SECUTEST, Rauschen).
+ * Der Energiezähler W (Nr. 55) hat nur einen Wert, solange der Funktionstest läuft bzw. noch nicht abgeschlossen ist.
+ */
+const ftActive = (values) => values.W?.value != null;
+// nach dem Ende des Funktionstests zeigen I und P nur noch den Leerlauf – das Gerät hält die Maximalwerte
+const FT_HELD = { P: 'P_MAX', I: 'I_MAX' };
 
 const DEFAULT_SECUTEST_CFG = {
   address: null,
@@ -55,6 +74,7 @@ class SecutestManager {
     this.driver = new SecutestDriver(this._driverOpts());
     this.driver.on('log', (e) => this.broadcast('log', e));
     this.driver.on('state', (s) => this.broadcast('state', this.status()));
+    this.driver.on('device-event', (e) => this.broadcast(e.type, e));
   }
 
   // -------------------- Server-Sent Events --------------------
@@ -150,14 +170,48 @@ class SecutestManager {
   }
 
   // -------------------- Messungen --------------------
-  mapValues(group, wer) {
-    const def = REMOTE[group];
+  mapValues(group, wer, map = REMOTE[group]?.map) {
     const out = {};
-    if (!def) return out;
-    for (const [key, n] of Object.entries(def.map)) {
-      if (wer[n]) out[key] = wer[n];
+    if (!map) return out;
+    for (const [key, n] of Object.entries(map)) {
+      if (wer[n]) out[key] = toQuantityUnit(key, wer[n]);
     }
     return out;
+  }
+
+  /**
+   * Werte zum Übernehmen: jede Größe muss zweimal nacheinander gleich gelesen werden – das Gerät vertauscht
+   * gelegentlich Zeichen, und die Prüfsumme (reine Zeichensumme) erkennt das nicht.
+   */
+  async readConfirmed(group) {
+    const def = REMOTE[group];
+    const keys = Object.keys(def.map);
+    const values = {};
+    let last = null;
+    for (let i = 0; i < 4 && keys.some((k) => !(k in values) && (!last || last[k])); i++) {
+      const cur = this.mapValues(group, await this.driver.getValues(def.read));
+      if (last) for (const k of keys) if (!(k in values) && cur[k] && last[k] && cur[k].text === last[k].text && cur[k].unit === last[k].unit) values[k] = cur[k];
+      last = cur;
+    }
+    return { values, last: last || {}, unconfirmed: keys.filter((k) => !(k in values) && last?.[k]?.value != null) };
+  }
+
+  /** Anzeigewert des Displays zusätzlich lesen – nur zur Anzeige, ein Fehler ist egal */
+  async _readLive(group, liveMap) {
+    if (!liveMap || !Object.keys(liveMap).length) return {};
+    try {
+      return this.mapValues(group, await this.driver.getValues(Object.values(liveMap)), liveMap);
+    } catch {
+      return {};
+    }
+  }
+
+  /** Anschlussstatus erst übernehmen, wenn er zweimal gleich gemeldet wurde (Gerät vertauscht gelegentlich Hex-Ziffern) */
+  _stableStatus(st) {
+    const same = st.raw === this._lastStatusRaw;
+    this._lastStatusRaw = st.raw;
+    if (same || !this._stableStatusValue) this._stableStatusValue = st;
+    return this._stableStatusValue;
   }
 
   /** Anschlusskontrolle vor der Prüfung (Remote): Kurzschluss, Einschaltzustand, Schutzleiter */
@@ -170,7 +224,7 @@ class SecutestManager {
     res.switchedOn = await d.startMeasurement(3);
     res.protectiveConductor = await d.startMeasurement(4);
     try {
-      res.status = await d.getStatus();
+      res.status = await d.getStatus({ confirm: true });
     } catch {
       res.status = null;
     }
@@ -195,11 +249,17 @@ class SecutestManager {
     return { started: true };
   }
 
-  async remoteRead(group) {
+  /** confirm: Werte zum Übernehmen (zweimal gleich gelesen), sonst Live-Werte inkl. Anzeigewert */
+  async remoteRead(group, { confirm = false } = {}) {
     const def = REMOTE[group];
     if (!def) throw Object.assign(new Error(`Unbekannte Messgruppe ${group}`), { status: 400 });
-    const wer = await this.driver.getValues(def.read);
-    return { group, raw: wer, values: this.mapValues(group, wer) };
+    const r = confirm ? await this.readConfirmed(group) : { values: this.mapValues(group, await this.driver.getValues(def.read)), unconfirmed: [] };
+    if (group === 'FT') {
+      const active = ftActive(r.last || r.values);
+      return { group, values: active ? r.values : {}, unconfirmed: active ? r.unconfirmed : [], ftActive: active };
+    }
+    const live = confirm ? {} : await this._readLive(group, def.live);
+    return { group, values: { ...live, ...r.values }, unconfirmed: r.unconfirmed };
   }
 
   async remoteStopFunctionTest() {
@@ -212,31 +272,49 @@ class SecutestManager {
     return { ok: true };
   }
 
-  /** Gerätegeführter Modus: was läuft gerade? + Live-Werte */
-  async live() {
-    const st = await this.driver.getStatus();
+  /** Gerätegeführter Modus: was läuft gerade? + Live-Werte (confirm: zum Übernehmen zweimal gleich gelesen) */
+  async live({ confirm = false } = {}) {
+    const st = this._stableStatus(await this.driver.getStatus());
     const groups = [...new Set(st.running.map(groupForMeasurementNo).filter(Boolean))];
     const group = groups[0] || null;
     let values = {};
+    let unconfirmed = [];
+    let ftOn = null;
     if (group) {
       try {
-        const wer = await this.driver.getValues(REMOTE[group].read);
-        values = this.mapValues(group, wer);
+        const def = REMOTE[group];
+        const r = confirm ? await this.readConfirmed(group) : { values: this.mapValues(group, await this.driver.getValues(def.read)), unconfirmed: [] };
+        values = r.values;
+        unconfirmed = r.unconfirmed;
+        if (group === 'FT') {
+          ftOn = ftActive(r.last || r.values);
+          if (!ftOn) (values = {}), (unconfirmed = []);
+        } else if (!confirm) {
+          // Anzeigewert: die laufende Messnummer (z. B. R_ISO Nr. 18, I_EA über Sonde Nr. 24)
+          const nums = st.running.filter((n) => groupForMeasurementNo(n) === group && !def.read.includes(n));
+          values = { ...(await this._readLive(group, nums.length ? { [`${def.final}_LIVE`]: nums[0] } : def.live)), ...values };
+        }
       } catch {
         /* egal */
       }
     }
-    return { flags: st.flags, running: st.running, group, values };
+    return { flags: st.flags, running: st.running, group, values, unconfirmed, ftActive: ftOn };
   }
 
-  /** Ergebnis (PRO?) + Funktionstest-Werte (WER?) abholen */
+  /** Ergebnis (PRO?, zweimal gleich gelesen) + Funktionstest-Werte (WER?) abholen */
   async fetchResult() {
     const pro = await this.driver.readProtocol();
     let ft = {};
     try {
-      const wer = await this.driver.getValues(REMOTE.FT.read);
-      ft = this.mapValues('FT', wer);
-      for (const k of Object.keys(ft)) if (ft[k].value == null) delete ft[k];
+      const r = await this.readConfirmed('FT');
+      if (ftActive(r.last)) ft = { ...r.values };
+      else if (pro.performed.FT || pro.performed.DI) {
+        // am Gerät schon abgeschlossen: Leerlaufwerte nicht als Messwerte des Funktionstests übernehmen
+        ft = { ...r.values };
+        for (const [k, held] of Object.entries(FT_HELD)) ft[k] = r.values[held] && { ...r.values[held], fromMax: true };
+        for (const k of ['S', 'PF', 'DI_LIVE']) delete ft[k];
+      }
+      for (const k of Object.keys(ft)) if (ft[k]?.value == null) delete ft[k];
     } catch {
       /* Funktionstest nicht durchgeführt */
     }

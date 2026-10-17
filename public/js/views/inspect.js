@@ -1,7 +1,7 @@
 // Prüfassistent: Gerät wählen → Ablauf/Modus → Schritte mit Grafik → Bewertung → Speichern
 import { h, clear, fmt, toast, field, input, select, resultBadge, skSymbol, confirmDialog, debounce, add, fill } from '../ui.js';
 import { get, post, del } from '../api.js';
-import { state, procName, deviceTypeLabel } from '../state.js';
+import { state, procName, deviceTypeLabel, onSecutest } from '../state.js';
 import { renderScene, sceneLegend } from '../illustrations.js';
 import { calibrationText } from './settings.js';
 
@@ -31,6 +31,16 @@ function every(ms, fn) {
 
 window.addEventListener('hashchange', () => {
   if (!location.hash.startsWith('#/inspect')) stopTimers();
+});
+
+// gerätegeführt: Das SECUTEST meldet „Protokoll fertig“ (PRF) nach der Sicherheitsprüfung und nach dem Funktionstest
+let resultRedraw = null; // gesetzt, solange der Schritt „Bewertung“ angezeigt wird
+onSecutest((type) => {
+  if (type !== 'protocol-ready' || !W?.started || W.saved || W.cfg.mode !== 'secutest-geraet') return;
+  W.protocolReady = true;
+  W.protocolFetched = false;
+  if (resultRedraw) fetchFromSecutest(resultRedraw);
+  else toast('SECUTEST: Protokoll fertig – das Ergebnis wird im Schritt „Bewertung“ automatisch übernommen.', 'ok', 6000);
 });
 
 const MODE_INFO = {
@@ -323,6 +333,7 @@ function stepStatus(step) {
 }
 
 function stepView(navigate, redraw) {
+  resultRedraw = null;
   const steps = W.proc.steps;
   const step = steps[W.stepIdx];
   const progress = h(
@@ -505,6 +516,18 @@ function takeValues(step, values, pointIdx) {
   }
 }
 
+/** Zweimal gleich gelesene Werte übernehmen (vertauschte Zeichen erkennt die Prüfsumme des Geräts nicht) */
+function takeConfirmed(step, r) {
+  const vals = Object.fromEntries(Object.entries(r.values || {}).filter(([, v]) => v.value != null));
+  if (!Object.keys(vals).length) {
+    toast(r.unconfirmed?.length ? 'Messwert schwankt oder wurde verfälscht übertragen – bitte nochmal übernehmen.' : 'Keine Messwerte vorhanden.', 'warn', 6000);
+    return false;
+  }
+  takeValues(step, vals);
+  if (r.unconfirmed?.length) toast(`Nicht stabil gelesen und daher nicht übernommen: ${r.unconfirmed.join(', ')}`, 'warn', 6000);
+  return true;
+}
+
 function measurePanel(step, body, redraw) {
   const pts = ensurePoint(step);
   if (W.display[step.id] == null) W.display[step.id] = W.cfg.mode === 'manuell' && !!state.meta.settings.manualDisplayCorrection;
@@ -592,7 +615,19 @@ function measurePanel(step, body, redraw) {
       });
     add(ctrl, startBtn);
     if (step.key === 'RSL') add(ctrl, h('button', { class: 'btn', onclick: () => post('/secutest/remote/start', { group, second: true }).then(() => toast('Polarität gewechselt (−)', 'ok')).catch((e) => toast(e.message, 'bad')) }, '⇄ Polung wechseln'));
-    add(ctrl, h('button', { class: 'btn ok', onclick: () => (Object.keys(lastLive).length ? (takeValues(step, lastLive), (running = false), stopTimers(), statusLine.textContent = '✓ Wert übernommen', drawPoints()) : toast('Noch keine Messwerte – Messung starten.', 'warn')) }, '✓ Wert übernehmen'));
+    add(ctrl, h('button', { class: 'btn ok', onclick: async () => {
+      if (!Object.keys(lastLive).length) return toast('Noch keine Messwerte – Messung starten.', 'warn');
+      try {
+        const r = await get(`/secutest/remote/read?group=${group}&confirm=1`);
+        if (!takeConfirmed(step, r)) return;
+        running = false;
+        stopTimers();
+        statusLine.textContent = '✓ Wert übernommen';
+        drawPoints();
+      } catch (e) {
+        toast(e.message, 'bad');
+      }
+    } }, '✓ Wert übernehmen'));
   } else if (W.cfg.mode === 'secutest-geraet' && step.deviceGroup) {
     every(900, async () => {
       try {
@@ -606,7 +641,16 @@ function measurePanel(step, body, redraw) {
         statusLine.textContent = `⚠ ${e.message}`;
       }
     });
-    add(ctrl, h('button', { class: 'btn', onclick: () => (Object.keys(lastLive).length ? (takeValues(step, lastLive), drawPoints(), toast('Live-Wert übernommen', 'ok')) : toast('Gerade kein Live-Wert vorhanden', 'warn')) }, '✓ Live-Wert übernehmen'));
+    add(ctrl, h('button', { class: 'btn', onclick: async () => {
+      if (!Object.keys(lastLive).length) return toast('Gerade kein Live-Wert vorhanden', 'warn');
+      try {
+        const r = await get('/secutest/live?confirm=1');
+        if (r.group !== step.deviceGroup) return toast('SECUTEST misst gerade nicht diesen Schritt', 'warn');
+        if (takeConfirmed(step, r)) (drawPoints(), toast('Live-Wert übernommen', 'ok'));
+      } catch (e) {
+        toast(e.message, 'bad');
+      }
+    } }, '✓ Live-Wert übernehmen'));
     body.appendChild(h('div', { class: 'small muted' }, 'Die endgültigen (um den Gebrauchsfehler korrigierten) Werte holt das Programm am Ende automatisch vom SECUTEST (Schritt „Bewertung“).'));
   }
 
@@ -638,7 +682,7 @@ function drawLive(box, values) {
     if (v.value == null && !v.text) continue;
     const base = k.replace(/_(MIN|MAX|AC|DC|TRMS|LIVE)$/, '');
     const unit = q[k]?.unit ?? q[base]?.unit ?? '';
-    box.appendChild(h('div', { class: 'lv' }, h('div', { class: 'k' }, k.replace(/_/g, ' ')), h('div', { class: 'v' }, `${v.qualifier || ''}${v.value == null ? v.text : fmt.num(v.value)} `, h('small', {}, unit))));
+    box.appendChild(h('div', { class: 'lv' }, h('div', { class: 'k' }, k.replace(/_LIVE$/, ' (Anzeige)').replace(/_/g, ' ')), h('div', { class: 'v' }, `${v.qualifier || ''}${v.value == null ? v.text : fmt.num(v.value)} `, h('small', {}, unit))));
   }
 }
 
@@ -692,7 +736,7 @@ function measurePanelFT(step, body, redraw) {
         const r = W.cfg.mode === 'secutest-pc' ? await get('/secutest/remote/read?group=FT') : await get('/secutest/live');
         lastLive = r.values || {};
         const any = Object.values(lastLive).some((v) => v.value != null);
-        statusLine.textContent = any ? '⏱ Werte vom SECUTEST (Netz an Prüfdose)' : 'Noch keine Werte – Taste FUNCTION-TEST (14) drücken, Prüfling einschalten.';
+        statusLine.textContent = r.ftActive === false ? 'Funktionstest läuft nicht – Taste FUNCTION-TEST (14) drücken (Lampe 15 leuchtet dann dauernd), Prüfling einschalten.' : any ? '⏱ Werte vom SECUTEST (Funktionstest läuft)' : 'Noch keine Werte – Taste FUNCTION-TEST (14) drücken, Prüfling einschalten.';
         drawLive(liveBox, lastLive);
       } catch (e) {
         statusLine.textContent = `⚠ ${e.message}`;
@@ -709,14 +753,20 @@ function measurePanelFT(step, body, redraw) {
       }
     } }, '▶ Funktionstest – Werte lesen'));
     else every(1000, read);
-    add(ctrl, h('button', { class: 'btn ok', onclick: () => {
-      const vals = {};
-      for (const [k, v] of Object.entries(lastLive)) if (v.value != null) vals[k] = v;
-      if (!Object.keys(vals).length) return toast('Keine Werte vorhanden', 'warn');
-      for (const q of step.quantities) if (vals[q.key]) p.values[q.key] = { ...vals[q.key], source: 'secutest' };
-      stopTimers();
-      drawInputs();
-      toast('Werte übernommen', 'ok');
+    add(ctrl, h('button', { class: 'btn ok', onclick: async () => {
+      try {
+        const r = await get('/secutest/remote/read?group=FT&confirm=1');
+        if (r.ftActive === false) return toast('Funktionstest läuft nicht – erst Taste FUNCTION-TEST (14) drücken.', 'warn', 6000);
+        const vals = {};
+        for (const [k, v] of Object.entries(r.values)) if (v.value != null) vals[k] = v;
+        if (!Object.keys(vals).length) return toast('Keine Werte vorhanden', 'warn');
+        for (const q of step.quantities) if (vals[q.key]) p.values[q.key] = { ...vals[q.key], source: 'secutest' };
+        stopTimers();
+        drawInputs();
+        toast(r.unconfirmed?.length ? `Werte übernommen – nicht stabil gelesen: ${r.unconfirmed.join(', ')}` : 'Werte übernommen', r.unconfirmed?.length ? 'warn' : 'ok', 6000);
+      } catch (e) {
+        toast(e.message, 'bad');
+      }
     } }, '✓ Werte übernehmen'));
   }
   add(body, ctrl, statusLine, liveBox, grid, skipControl(step, redraw));
@@ -771,6 +821,7 @@ async function fetchFromSecutest(redraw) {
       toast(`SECUTEST hat ${pro.classification.protectionClass} erkannt (erfasst: ${W.device.protection_class}). Bitte Gerätedaten prüfen.`, 'warn', 9000);
     }
     if (pro.classification.dutNotSwitchedOn) toast('Hinweis vom SECUTEST: Prüfling war bei R_ISO/I_EA nicht eingeschaltet!', 'warn', 9000);
+    W.protocolFetched = true;
     toast(`${n} Messwert(e) vom SECUTEST übernommen`, 'ok');
     redraw();
   } catch (e) {
@@ -786,7 +837,11 @@ function resultPanel(step, body, navigate, redraw) {
   const nextBox = h('span');
   let evaluation = null;
 
-  if (W.cfg.mode === 'secutest-geraet') body.appendChild(h('div', { class: 'alert info' }, h('div', { class: 'row between' }, h('span', {}, 'Hat das SECUTEST „bestanden/nicht bestanden“ angezeigt? Dann jetzt alle Werte übernehmen:'), h('button', { class: 'btn primary', onclick: () => fetchFromSecutest(redraw) }, '📥 Ergebnis vom SECUTEST abholen'))));
+  if (W.cfg.mode === 'secutest-geraet') {
+    body.appendChild(h('div', { class: 'alert info' }, h('div', { class: 'row between' }, h('span', {}, W.protocolFetched ? 'Ergebnis vom SECUTEST übernommen. Bei Bedarf erneut abholen:' : 'Hat das SECUTEST „bestanden/nicht bestanden“ angezeigt? Dann jetzt alle Werte übernehmen:'), h('button', { class: 'btn primary', onclick: () => fetchFromSecutest(redraw) }, '📥 Ergebnis vom SECUTEST abholen'))));
+    resultRedraw = redraw;
+    if (W.protocolReady && !W.protocolFetched) setTimeout(() => fetchFromSecutest(redraw), 0);
+  }
   if (W.remoteActive) post('/secutest/remote/end').then(() => (W.remoteActive = false)).catch(() => {});
 
   const interval = input({ type: 'number', min: 1, max: 120, value: W.intervalMonths, style: { maxWidth: '90px' }, oninput: (e) => ((W.intervalMonths = Number(e.target.value) || W.intervalMonths), drawNext()) });

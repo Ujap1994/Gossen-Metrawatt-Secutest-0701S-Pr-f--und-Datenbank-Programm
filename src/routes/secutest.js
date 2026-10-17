@@ -136,7 +136,7 @@ module.exports = function secutestRoutes(manager) {
 
   r.get('/remote/read', async (req, res) => {
     need();
-    res.json(await manager.remoteRead(String(req.query.group || '')));
+    res.json(await manager.remoteRead(String(req.query.group || ''), { confirm: req.query.confirm === '1' }));
   });
 
   r.post('/remote/stop-ft', async (req, res) => {
@@ -149,7 +149,7 @@ module.exports = function secutestRoutes(manager) {
   // --------- gerätegeführt ---------
   r.get('/live', async (req, res) => {
     need();
-    res.json(await manager.live());
+    res.json(await manager.live({ confirm: req.query.confirm === '1' }));
   });
 
   r.get('/result', async (req, res) => {

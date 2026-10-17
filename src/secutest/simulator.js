@@ -84,7 +84,8 @@ class SimulatedSecutest extends EventEmitter {
 
   _send(body) {
     const msg = body + '$';
-    const line = msg + checksum(msg) + '\r\n';
+    // Rahmen wie beim echten Gerät: XOFF, Antwort, CR LF, Prompt ">", XON
+    const line = CTRL.XOFF + msg + checksum(msg) + '\r\n>' + CTRL.XON;
     const t = setTimeout(() => this.isOpen && this.emit('data', Buffer.from(line, 'latin1')), this.latency);
     this.timers.push(t);
   }
@@ -151,6 +152,8 @@ class SimulatedSecutest extends EventEmitter {
       set(15, Math.max(a, b) * 1.05 + 0.01);
     } else if ((n >= 16 && n <= 21) || (n >= 96 && n <= 98)) {
       const r = s.RISO >= 310 ? 311 : jitter(s.RISO, 0.02);
+      set(16, r); // Anzeigewert (laufende Messnummer)
+      set(18, r);
       set(19, r);
       set(20, r * 1.01);
       set(21, r >= 310 ? 311 : r * 0.95);
@@ -160,6 +163,8 @@ class SimulatedSecutest extends EventEmitter {
       set(98, u + 1);
     } else if (n >= 24 && n <= 30) {
       const i = jitter(s.IEA, 0.03);
+      set(24, i); // Anzeigewert (laufende Messnummer)
+      set(26, i);
       set(28, i * 0.98);
       set(29, i * 1.02);
       set(30, i * 1.05 + 0.01);
@@ -203,7 +208,7 @@ class SimulatedSecutest extends EventEmitter {
     const v = this.values[n];
     if (v === undefined || v === null) return '---.-';
     if (n >= 12 && n <= 15) return fmtVal(v, 3, 31);
-    if (n >= 19 && n <= 21) return v >= 310 ? '>310.0' : fmtVal(v, v < 1.5 ? 3 : v < 11 ? 2 : 1);
+    if ([16, 18, 19, 20, 21].includes(n)) return v >= 310 ? '>310.0' : fmtVal(v, v < 1.5 ? 3 : v < 11 ? 2 : 1);
     if (n >= 96 && n <= 98) return fmtVal(v, 0);
     if (n >= 28 && n <= 30) return fmtVal(v, 2);
     if (n >= 32 && n <= 38) return fmtVal(v, 3);
@@ -283,6 +288,7 @@ class SimulatedSecutest extends EventEmitter {
       seq.done = true;
       this.running = [];
       this.lastProtocol = this._buildProtocol();
+      this._send(`PRF${this.address ?? ''}`); // wie das echte Gerät: „Protokoll fertig“
       return;
     }
     const st = seq.steps[seq.idx];

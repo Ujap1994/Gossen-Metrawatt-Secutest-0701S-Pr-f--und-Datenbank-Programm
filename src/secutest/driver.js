@@ -38,6 +38,9 @@ async function listPorts() {
   }
 }
 
+/** Abfragen werden bei verfälschter Antwort so oft wiederholt */
+const MAX_RETRIES = 2;
+
 class SecutestError extends Error {
   constructor(code, message) {
     super(message);
@@ -159,7 +162,8 @@ class SecutestDriver extends EventEmitter {
     while ((idx = this.rxBuffer.search(/[\r\n]/)) >= 0) {
       const line = this.rxBuffer.slice(0, idx);
       this.rxBuffer = this.rxBuffer.slice(idx + 1);
-      const trimmed = line.replace(/[\x11\x13\x00]/g, '').trim();
+      // Das Gerät sendet nach jeder Antwort "\r\n>" XON (nach TAS!r noch ^C) ohne Zeilenende – das landet vor der nächsten Zeile
+      const trimmed = line.replace(/[\x00-\x1f]/g, '').trim().replace(/^>+\s*/, '');
       if (!trimmed) continue;
       this._handleLine(trimmed);
     }
@@ -170,19 +174,50 @@ class SecutestDriver extends EventEmitter {
     const parsed = parseLine(text);
     this._log('rx', text + (parsed.checksumOk === false ? '   ⚠ Prüfsumme abweichend' : ''));
     this.emit('line', parsed);
+    // unaufgeforderte Meldung – gehört nie zu einem Befehl
+    if (parsed.type === 'event' && parsed.checksumOk !== false) {
+      this._log('info', 'SECUTEST meldet: Protokoll fertig (PRF)');
+      this.emit('device-event', { type: 'protocol-ready', ts: new Date().toISOString() });
+      return;
+    }
     const p = this.pending;
     if (!p) return;
+    if (p.expect === 'any') return this._resolve(parsed);
+    // Verfälschte Antworten nie übernehmen. Die Prüfsumme ist eine reine Zeichensumme und erkennt
+    // vertauschte Zeichen (am Gerät beobachtet: „WRETE“, „0A“ statt „A0“) nicht – daher zusätzlich p.validate.
+    if (parsed.checksumOk === false) return this._garbled(new SecutestError('CHECKSUM', `Antwort auf „${p.command}“ mit falscher Prüfsumme verworfen.`));
+    if (parsed.type === 'unknown') {
+      if (text === p.frame.replace(/\r/g, '')) return; // Echo des eigenen Befehls
+      return this._garbled(new SecutestError('GARBLED', `Unverständliche Antwort auf „${p.command}“ verworfen.`));
+    }
+    if (parsed.type === 'error') {
+      const err = new SecutestError('DEVICE_ERROR', `SECUTEST meldet Fehler (E) bei „${p.command}“ – Gerät noch beschäftigt oder Befehl in diesem Zustand nicht möglich.`);
+      // „.Ex“ kommt am Gerät gelegentlich, solange es misst – Abfragen nach kurzer Pause wiederholen
+      return p.command.includes('?') ? this._garbled(err, 300) : this._reject(err);
+    }
     if (p.expect === 'answer') {
-      if (parsed.type === 'answer') return this._resolve(parsed);
+      if (parsed.type === 'answer') return p.validate && !p.validate(parsed) ? this._garbled(new SecutestError('GARBLED', `Unplausible Antwort auf „${p.command}“ verworfen.`)) : this._resolve(parsed);
       if (parsed.type === 'nak') return this._reject(new SecutestError('NAK', `SECUTEST hat „${p.command}“ nicht ausgeführt (N).`));
       // Y vor der Antwort ignorieren
     } else if (p.expect === 'ack') {
       if (parsed.type === 'ack') return this._resolve(parsed);
       if (parsed.type === 'nak') return this._reject(new SecutestError('NAK', `SECUTEST hat „${p.command}“ nicht ausgeführt (N).`));
       if (parsed.type === 'answer') return this._resolve(parsed);
-    } else if (p.expect === 'any') {
-      return this._resolve(parsed);
     }
+  }
+
+  /** Verfälschte Antwort oder „beschäftigt“: Abfragen (?) wiederholen; Befehle (!) nicht – TAS!4 würde sonst z. B. doppelt drücken */
+  _garbled(err, delayMs = this.opts.settleMs) {
+    const p = this.pending;
+    if (p.command.includes('?') && (p.retries || 0) < MAX_RETRIES) {
+      p.retries = (p.retries || 0) + 1;
+      clearTimeout(p.timer);
+      this._log('warn', `${err.message} Wiederholung ${p.retries}/${MAX_RETRIES}.`);
+      setTimeout(() => this.pending === p && this._transmit(p), delayMs);
+      return;
+    }
+    if (!p.command.includes('?')) err.message += ' Der Befehl wurde möglicherweise trotzdem ausgeführt.';
+    this._reject(err);
   }
 
   _resolve(v) {
@@ -214,25 +249,41 @@ class SecutestDriver extends EventEmitter {
     if (this.pending || !this.queue.length) return;
     const job = this.queue.shift();
     this.pending = job;
-    const frame = buildCommand(job.command, { address: this.opts.address, withChecksum: job.withChecksum ?? this.opts.withChecksum });
-    this._log('tx', frame.replace(/\r/g, ''));
+    this._transmit(job);
+  }
+
+  _transmit(job) {
+    job.frame = buildCommand(job.command, { address: this.opts.address, withChecksum: job.withChecksum ?? this.opts.withChecksum });
+    this._log('tx', job.frame.replace(/\r/g, ''));
     job.timer = setTimeout(() => {
       if (this.pending === job) this._reject(new SecutestError('TIMEOUT', `Keine Antwort auf „${job.command}“ (Timeout ${job.timeout} ms).`));
     }, job.timeout);
-    this._writeRaw(frame).catch((e) => this.pending === job && this._reject(e));
+    this._writeRaw(job.frame).catch((e) => this.pending === job && this._reject(e));
   }
 
   /**
    * Befehl senden. expect: 'answer' (für ?), 'ack' (für !), 'any'
+   * validate(parsed): false -> Antwort gilt als verfälscht, Abfrage wird wiederholt
    */
-  send(command, { expect, timeout, withChecksum } = {}) {
+  send(command, { expect, timeout, withChecksum, validate } = {}) {
     if (!this.connected) return Promise.reject(new SecutestError('NOT_CONNECTED', 'Nicht mit dem SECUTEST verbunden.'));
     const cmd = String(command).trim();
     const exp = expect || (cmd.includes('?') ? 'answer' : 'ack');
     return new Promise((resolve, reject) => {
-      this.queue.push({ command: cmd, expect: exp, timeout: timeout || this.opts.timeoutMs, withChecksum, resolve, reject });
+      this.queue.push({ command: cmd, expect: exp, timeout: timeout || this.opts.timeoutMs, withChecksum, validate, resolve, reject });
       this._next();
     });
+  }
+
+  /** So lange lesen, bis zwei Antworten nacheinander übereinstimmen (gegen vertauschte Zeichen) */
+  async _readTwice(read, key, what) {
+    let prev = null;
+    for (let i = 0; i < 4; i++) {
+      const cur = await read();
+      if (prev && key(cur) === key(prev)) return cur;
+      prev = cur;
+    }
+    throw new SecutestError('UNSTABLE', `${what} wurde nicht zweimal gleich gelesen – Verbindung prüfen und erneut versuchen.`);
   }
 
   /** Rohes Terminal: Zeichenkette mit optionaler Prüfsumme senden, erste Antwortzeile zurückgeben */
@@ -250,24 +301,30 @@ class SecutestDriver extends EventEmitter {
   // Komfortfunktionen
   // -------------------------------------------------------------------------
   async identify() {
-    const r = await this.send('IDN?');
+    const r = await this.send('IDN?', { validate: (a) => a.operation === 'IDN' });
     return parseIdn(r.params);
   }
 
   async getValues(nums = []) {
-    const r = await this.send(`WER?${nums.join(',')}`);
+    const want = nums.map(Number).join();
+    // „.Nx“: mindestens eine Nummer gibt es nicht; sonst müssen genau die angefragten Nummern zurückkommen
+    const validate = (a) => a.operation === 'WERTE' && (/^\.?N(\d+|x)?$/.test(a.params) || Object.keys(parseWer(a.params)).map(Number).sort((x, y) => x - y).join() === nums.map(Number).sort((x, y) => x - y).join());
+    const r = await this.send(`WER?${want}`, { validate });
     return parseWer(r.params);
   }
 
-  async getStatus() {
-    const r = await this.send('MES?');
-    return parseMes(r.params);
+  /** confirm: zweimal gleich lesen (Anschlusskontrolle) – das Gerät vertauscht gelegentlich die Hex-Ziffern („0A“ statt „A0“) */
+  async getStatus({ confirm = false } = {}) {
+    const read = () => this.send('MES?', { validate: (a) => a.operation === 'MES' && /^[0-9A-Fa-f]{2}(;\d+)*;?$/.test(a.params) });
+    const r = confirm ? await this._readTwice(read, (a) => a.params, 'Der Anschlussstatus (MES?)') : await read();
+    return { ...parseMes(r.params), raw: r.params };
   }
 
   /** Startet Messung (Remote-Modus). Liefert true bei Y, false bei N (z. B. Kontrollmessungen 1–4). */
   async startMeasurement(n) {
     try {
-      await this.send(`MES!${n}`);
+      // Kontrollmessung MES!1 (Kurzschluss) quittiert das Gerät erst nach ca. 2,5 s
+      await this.send(`MES!${n}`, { timeout: Math.max(this.opts.timeoutMs, 6000) });
       return true;
     } catch (e) {
       if (e.code === 'NAK') return false;
@@ -293,8 +350,10 @@ class SecutestDriver extends EventEmitter {
     await sleep(600); // Gerät startet neu (ca. 500 ms)
   }
 
+  /** Protokoll (PRO?) – wird ins Prüfprotokoll übernommen, daher zweimal gleich gelesen */
   async readProtocol() {
-    const r = await this.send('PRO?', { timeout: 4000 });
+    const read = () => this.send('PRO?', { timeout: 4000, validate: (a) => a.operation === 'PROTOKOLL' && /^[^;]*;[0-9A-Fa-f]{16}(;|$)/.test(a.params) });
+    const r = await this._readTwice(read, (a) => a.raw, 'Das Protokoll (PRO?)');
     return { raw: r.raw, ...parsePro(r.params) };
   }
 

@@ -4,6 +4,23 @@ Alle Änderungen am Secutest Prüfmanager, die neueste oben. Der jeweils oberste
 
 > ⚠ Open-Source-Software ohne Gewähr. Prüfungen nur durch Elektrofachkräfte. Siehe [Haftungsausschluss](README.md#haftungsausschluss).
 
+## 1.3.1 – Schnittstelle am echten SECUTEST korrigiert
+
+Am echten SECUTEST S (Firmware GTM5015000R0001, USB-RS232-Adapter FTDI) getestet: Anschlusskontrolle, R_ISO, Ersatz-Ableitstrom über die Sonde, Funktionstest und Protokollabruf, PC-gesteuert und gerätegeführt.
+
+### Behoben
+* **„⚠ Prüfsumme abweichend“ und Zeitüberschreitungen:** Nach dem ersten Befehl liefen alle weiteren ins Leere. Das Gerät schickt nach jeder Antwort ein Eingabezeichen „>“ (nach dem Abschalten der Fernsteuerung zusätzlich ^C), und das landete vor der nächsten Antwort.
+* **Quittungen** im Format des Geräts (`.Yx`, `.Nx`, `.Ex`) werden erkannt. Vorher lief jeder Befehl, der etwas schaltet oder startet, in eine Zeitüberschreitung.
+* **Messwerte mit Einheit** (`28:00.18mA`, `>310.0MΩ`) werden gelesen und auf die Einheit der Messgröße umgerechnet, z. B. kΩ in MΩ. Ein Wert mit unpassender Einheit wird verworfen statt falsch skaliert übernommen.
+* **Antworten mit falscher Prüfsumme** werden nie übernommen. Abfragen wiederholt das Programm sofort, Befehle nicht, damit z. B. kein Tastendruck doppelt ankommt.
+* **Vertauschte Zeichen**, die die Prüfsumme nicht erkennt: Das Gerät verdreht gelegentlich den Anfang einer Antwort („0A“ statt „A0“). Werte für das Prüfprotokoll und das Geräteprotokoll (PRO?) werden deshalb zweimal gleich gelesen, und der Anschlussstatus wechselt erst nach zwei gleichen Meldungen.
+* **Funktionstest:** Werte werden nur übernommen, solange der Funktionstest wirklich läuft (Netz an der Prüfdose). Vorher ließ sich ein Funktionstest dokumentieren, der nie stattgefunden hat.
+* Kurzschlusstest (MES!1) mit längerer Wartezeit, Geräte-ID ohne Füllzeichen, elektrische Arbeit (kWh) wird übernommen.
+
+### Neu
+* Live-Anzeige zeigt zusätzlich den **Anzeigewert des Displays**. Übernommen wird wie im Geräteprotokoll der Wert inkl. Gebrauchsfehler.
+* Gerätegeführt: Meldet das SECUTEST „Protokoll fertig“, holt das Programm das Ergebnis im Schritt „Bewertung“ automatisch ab.
+
 ## 1.3.0 – QR-Scanner, Serienprüfung, Intervallvorschlag nach DGUV V3, Kalibrier-Erinnerung
 
 ### Neu: Prüfplaketten scannen

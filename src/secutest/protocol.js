@@ -8,6 +8,12 @@
  *  Prüfsumme: Summe der ASCII-Werte aller Zeichen inkl. '$', Übertrag über FF abgeschnitten,
  *             als 2 ASCII-Hex-Zeichen.
  *  Quittung:  Y<ADRESSE>$<CHKSUM><CR> (ausgeführt) bzw. N<ADRESSE>$<CHKSUM><CR> (nicht ausgeführt)
+ *
+ *  Abweichungen des echten Geräts (SECUTEST S, Firmware GTM5015000R0001, Mitschnitt am FTDI-Adapter):
+ *   - ohne eingestellte Adresse steht „x“ an Stelle der Adresse: IDNx=x;…, WERTEx=…, .Yx
+ *   - Quittungen mit führendem Punkt: .Yx / .Nx, dazu .Ex (Fehler, z. B. Gerät noch beschäftigt)
+ *   - Messwerte mit Doppelpunkt und Einheit: WERTEx=28:00.19mA;21:>310.0MΩ (Ω = 0xEA, µ = 0xE6, Codepage 437)
+ *   - jede Antwort ist eingerahmt: XOFF … CR LF „>“ XON, nach TAS!r folgt zusätzlich ^C
  */
 
 const CTRL = {
@@ -70,15 +76,22 @@ function parseLine(raw) {
   }
   const b = res.body.trim();
   let m;
-  if ((m = b.match(/^([YN])(\d*)$/))) {
-    res.type = m[1] === 'Y' ? 'ack' : 'nak';
-    res.address = m[2] || null;
+  // unaufgeforderte Meldung „Protokoll fertig“ (nach der Sicherheitsprüfung und nach dem Funktionstest)
+  if ((m = b.match(/^PRF(\d+|x)?$/))) {
+    res.type = 'event';
+    res.operation = 'PRF';
+    res.address = m[1] && m[1] !== 'x' ? m[1] : null;
     return res;
   }
-  if ((m = b.match(/^([A-Za-z]+?)(\d*)\s*=\s*([\s\S]*)$/))) {
+  if ((m = b.match(/^\.?([YNE])(\d+|x)?$/))) {
+    res.type = { Y: 'ack', N: 'nak', E: 'error' }[m[1]];
+    res.address = m[2] && m[2] !== 'x' ? m[2] : null;
+    return res;
+  }
+  if ((m = b.match(/^([A-Za-z]+?)(\d+|x)?\s*=\s*([\s\S]*)$/))) {
     res.type = 'answer';
     res.operation = m[1].toUpperCase();
-    res.address = m[2] || null;
+    res.address = m[2] && m[2] !== 'x' ? m[2] : null;
     res.params = m[3].trim();
     return res;
   }
@@ -91,24 +104,56 @@ function parseLine(raw) {
   return res;
 }
 
-/** "0.077" | ">310.0" | "---.-" | "00.0-"  -> {text, value, qualifier} */
+const CP437 = { '\xe6': 'µ', '\xea': 'Ω' };
+// das Gerät sendet die elektrische Arbeit als „xJ“, im Display steht kWh
+const UNIT_ALIAS = { xJ: 'kWh' };
+
+/** "0.077" | ">310.0" | "---.-" | "00.0-" | "00.19mA" | "0538.V" -> {text, value, qualifier[, unit]} */
 function parseNumber(text) {
-  const t = String(text ?? '').trim();
-  if (!t || /^-+\.?-*$/.test(t)) return { text: t, value: null, qualifier: null };
-  const m = t.replace(',', '.').match(/^([<>])?\s*([-+]?\d*\.?\d+)\s*(-)?$/);
-  if (!m) return { text: t, value: null, qualifier: null };
+  let t = String(text ?? '').trim();
+  let unit = null;
+  const u = t.match(/^(.*[\d.-])\s*([A-Za-z%\xb5\xe6\xeaΩ]+)$/);
+  if (u) {
+    t = u[1];
+    unit = u[2].replace(/[\xe6\xea]/g, (c) => CP437[c]);
+    unit = UNIT_ALIAS[unit] || unit;
+  }
+  const withUnit = (r) => (unit ? { ...r, unit } : r);
+  if (!t || /^-+\.?-*$/.test(t)) return withUnit({ text: t, value: null, qualifier: null });
+  const m = t.replace(',', '.').match(/^([<>])?\s*([-+]?(?:\d+\.?\d*|\.\d+))\s*(-)?$/);
+  if (!m) return withUnit({ text: t, value: null, qualifier: null });
   let v = parseFloat(m[2]);
   if (m[3]) v = -v;
-  return { text: t, value: v, qualifier: m[1] || null };
+  return withUnit({ text: t, value: v, qualifier: m[1] || null });
 }
 
-/** WERTEx=m1,Inhalt;m2,Inhalt -> { 12: {text,value,qualifier}, … } */
+const SI_PREFIX = { p: 1e-12, n: 1e-9, µ: 1e-6, m: 1e-3, '': 1, k: 1e3, M: 1e6, G: 1e9 };
+const BASE_UNITS = ['VA', 'Wh', 'Hz', 'Ω', 'A', 'V', 'W', 's', '%'];
+
+function splitUnit(unit) {
+  for (const base of BASE_UNITS) {
+    const prefix = unit.slice(0, -base.length);
+    if (unit.endsWith(base) && prefix in SI_PREFIX) return { prefix, base };
+  }
+  return null;
+}
+
+/** Wert von der Geräteeinheit (z. B. kΩ) in die erwartete Einheit (z. B. MΩ) umrechnen; null, wenn nicht umrechenbar */
+function convertUnit(value, from, to) {
+  if (value == null || !from || from === to) return value;
+  const a = splitUnit(from);
+  const b = splitUnit(to ?? '');
+  if (!a || !b || a.base !== b.base) return null;
+  return value * (SI_PREFIX[a.prefix] / SI_PREFIX[b.prefix]);
+}
+
+/** WERTEx=m1,Inhalt;m2,Inhalt (Anleitung) bzw. WERTEx=m1:Inhalt;m2:Inhalt (Gerät) -> { 12: {text,value,qualifier}, … } */
 function parseWer(params) {
   const out = {};
   for (const part of String(params).split(';')) {
     const p = part.trim();
     if (!p) continue;
-    const i = p.indexOf(',');
+    const i = p.search(/[,:]/);
     if (i < 0) continue;
     const n = parseInt(p.slice(0, i), 10);
     if (Number.isFinite(n)) out[n] = parseNumber(p.slice(i + 1));
@@ -143,8 +188,9 @@ function parseMes(params) {
 
 /** IDN-Antwort: "0;GMN;SecuTest S;GTM5015000R0001;18. Juli 1994 164931;Schäfer;05" */
 function parseIdn(params) {
-  const p = String(params).split(/[;,]/).map((s) => s.trim());
-  return { address: p[0] || null, manufacturer: p[1] || null, model: p[2] || null, firmware: p[3] || null, date: p[4] || null, deviceId: p[5] || null, calibration: p[6] || null, raw: params };
+  // unbeschriebene Felder im Gerät kommen als 0xFF-Bytes
+  const p = String(params).split(/[;,]/).map((s) => s.replace(/\xff/g, '').trim());
+  return { address: p[0] && p[0] !== 'x' ? p[0] : null, manufacturer: p[1] || null, model: p[2] || null, firmware: p[3] || null, date: p[4] || null, deviceId: p[5] || null, calibration: p[6] || null, raw: params };
 }
 
 const bit = (byte, n) => !!(byte & (1 << n));
@@ -156,7 +202,7 @@ const bit = (byte, n) => !!(byte & (1 << n));
 function parsePro(params) {
   const parts = String(params).split(';').map((s) => s.trim());
   while (parts.length && parts[parts.length - 1] === '') parts.pop();
-  const deviceId = parts[0] || '';
+  const deviceId = (parts[0] || '').replace(/\xff/g, '').trim();
   const hex = (parts[1] || '').replace(/[^0-9A-Fa-f]/g, '').padEnd(16, '0');
   const byte = (i) => parseInt(hex.slice(i * 2, i * 2 + 2), 16) || 0;
   const [BB, CC, DD, EE, FF, GG, HH] = [0, 1, 2, 3, 4, 5, 6].map(byte);
@@ -240,4 +286,4 @@ function parsePro(params) {
   };
 }
 
-module.exports = { CTRL, KEYS, SWITCH_POSITIONS, checksum, buildCommand, parseLine, parseNumber, parseWer, parseMes, parseIdn, parsePro, CONNECTION_FLAGS };
+module.exports = { CTRL, KEYS, SWITCH_POSITIONS, checksum, buildCommand, parseLine, parseNumber, convertUnit, parseWer, parseMes, parseIdn, parsePro, CONNECTION_FLAGS };

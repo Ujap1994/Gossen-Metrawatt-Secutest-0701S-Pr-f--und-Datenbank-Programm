@@ -33,7 +33,7 @@ export function connectEvents() {
   if (state.events) return;
   const es = new EventSource('/api/secutest/events');
   state.events = es;
-  for (const type of ['state', 'log', 'scan', 'port-added', 'port-removed', 'device-found']) {
+  for (const type of ['state', 'log', 'scan', 'port-added', 'port-removed', 'device-found', 'protocol-ready']) {
     es.addEventListener(type, (ev) => {
       const data = JSON.parse(ev.data);
       if (type === 'state') state.secutest = data;
