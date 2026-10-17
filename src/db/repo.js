@@ -49,6 +49,7 @@ const DEFAULT_SETTINGS = {
   inspector: { name: '', qualification: 'Elektrofachkraft', company: '' },
   inventoryPrefix: 'G-',
   defaultIntervalMonths: 12,
+  defaultUsageEnv: '', // Einsatzbereich neuer Geräte (Intervallvorschlag nach DGUV V3)
   limitProfile: DEFAULT_PROFILE,
   defaultStandard: 'VDE 0702',
   autoLockMinutes: 15,
@@ -87,6 +88,7 @@ function updateSettings(sdb, patch) {
   next.autoLockMinutes = clampInt(next.autoLockMinutes, 1, 240, 15);
   if (!['mail', 'calendar', 'both'].includes(next.reminders.channel)) next.reminders.channel = 'both';
   if (!['due', 'monthly'].includes(next.reminders.grouping)) next.reminders.grouping = 'due';
+  if (!['', 'baustelle', 'werkstatt', 'buero', 'privat'].includes(next.defaultUsageEnv)) next.defaultUsageEnv = '';
   sdb.setJson('settings', next);
   audit(sdb, 'einstellungen', 'settings', null, Object.keys(patch).join(', '));
   return next;
@@ -143,6 +145,7 @@ const DEVICE_FIELDS = {
   owner: 'text',
   purchase_date: 'date',
   interval_months: 'int',
+  usage_env: 'enum:baustelle|werkstatt|buero|privat',
   status: 'enum:aktiv|gesperrt|reparatur|ausgemustert',
   reminder_enabled: 'bool',
   next_due_date: 'date',
@@ -280,6 +283,7 @@ function createDevice(sdb, input) {
   const settings = getSettings(sdb);
   if (!data.inventory_no) data.inventory_no = nextInventoryNo(sdb);
   if (data.interval_months == null) data.interval_months = settings.defaultIntervalMonths;
+  if (data.usage_env == null && ['baustelle', 'werkstatt', 'buero', 'privat'].includes(settings.defaultUsageEnv)) data.usage_env = settings.defaultUsageEnv;
   if (sdb.db.prepare('SELECT 1 FROM devices WHERE inventory_no = ?').get(data.inventory_no)) {
     throw new RepoError(`Die Inventarnummer ${data.inventory_no} ist bereits vergeben.`, 409);
   }
@@ -329,6 +333,34 @@ function duplicateDevice(sdb, id) {
   copy.status = 'aktiv';
   copy.name = d.name;
   return createDevice(sdb, copy);
+}
+
+/**
+ * Gleiche Geräte mehrfach anlegen (z. B. 20 Verlängerungsleitungen für eine Serienprüfung).
+ * numbering: Bezeichnung „… #2“, „… #3“ … (das Original wird bei Bedarf zu „… #1“).
+ */
+function duplicateDeviceMany(sdb, id, { count = 1, numbering = true } = {}) {
+  const n = parseInt(count, 10);
+  if (!Number.isFinite(n) || n < 1 || n > 200) throw new RepoError('Anzahl: 1 bis 200 Kopien.');
+  const d = getDevice(sdb, id);
+  const base = d.name.replace(/\s+#\d+$/, '');
+  const created = [];
+  sdb.db.transaction(() => {
+    if (numbering && !/\s#\d+$/.test(d.name)) updateDevice(sdb, id, { name: `${base} #1` });
+    const taken = new Set(sdb.db.prepare('SELECT name FROM devices WHERE name LIKE ?').all(`${base} #%`).map((r) => r.name));
+    let k = 1;
+    for (let i = 0; i < n; i++) {
+      const copy = duplicateDevice(sdb, id);
+      if (numbering) {
+        do k += 1;
+        while (taken.has(`${base} #${k}`));
+        taken.add(`${base} #${k}`);
+        created.push(updateDevice(sdb, copy.id, { name: `${base} #${k}` }));
+      } else created.push(copy);
+    }
+  })();
+  audit(sdb, 'geraet-vervielfaeltigt', 'device', id, `${n} Kopie(n) von ${d.inventory_no} ${base}`);
+  return { original: getDevice(sdb, id), created };
 }
 
 // ---------------------------------------------------------------------------
@@ -483,9 +515,9 @@ function saveInspection(sdb, input) {
     const info = sdb.db
       .prepare(
         `INSERT INTO inspections (device_id, inspection_date, started_at, finished_at, standard, reason, procedure, mode, protection_class, limit_profile, inspector,
-          result, device_verdict, action, action_note, interval_months, next_due_date, meter_idn, raw_protocol, notes)
+          result, device_verdict, action, action_note, interval_months, next_due_date, meter_idn, meter_calibration, raw_protocol, notes)
          VALUES (@device_id, @inspection_date, @started_at, @finished_at, @standard, @reason, @procedure, @mode, @protection_class, @limit_profile, @inspector,
-          @result, @device_verdict, @action, @action_note, @interval_months, @next_due_date, @meter_idn, @raw_protocol, @notes)`
+          @result, @device_verdict, @action, @action_note, @interval_months, @next_due_date, @meter_idn, @meter_calibration, @raw_protocol, @notes)`
       )
       .run({
         device_id: device.id,
@@ -506,6 +538,7 @@ function saveInspection(sdb, input) {
         interval_months: interval,
         next_due_date: nextDue,
         meter_idn: input.meter_idn || null,
+        meter_calibration: input.meter_calibration ? String(input.meter_calibration).slice(0, 200) : null,
         raw_protocol: input.raw_protocol || null,
         notes: notesText || null,
       });
@@ -673,6 +706,7 @@ module.exports = {
   updateDevice,
   deleteDevice,
   duplicateDevice,
+  duplicateDeviceMany,
   nextInventoryNo,
   distinctValues,
   REASONS,

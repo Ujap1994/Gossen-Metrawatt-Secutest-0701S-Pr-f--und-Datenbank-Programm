@@ -3,8 +3,14 @@ import { h, clear, fmt, toast, field, input, select, resultBadge, skSymbol, conf
 import { get, post, del } from '../api.js';
 import { state, procName, deviceTypeLabel } from '../state.js';
 import { renderScene, sceneLegend } from '../illustrations.js';
+import { calibrationText } from './settings.js';
 
 let W = null; // laufende Prüfung
+/**
+ * Serienprüfung gleicher Geräte: { ids, results: {id: 'bestanden'|'nicht_bestanden'|'skip'}, template }
+ * template = Einstellungen und Sichtprüfung des zuletzt gespeicherten Geräts der Serie.
+ */
+let SERIES = null;
 const timers = new Set();
 
 export function wizardDirty() {
@@ -73,10 +79,71 @@ function valText(v) {
 // ===========================================================================
 export async function renderInspect({ params, navigate }) {
   stopTimers();
+  if (params.series) {
+    const ids = [...new Set(String(params.series).split(',').map(Number).filter(Boolean))];
+    if (ids.length) {
+      SERIES = { ids, results: {}, template: null };
+      W = null;
+      return renderSetup(ids[0], navigate);
+    }
+  }
+  if (params.seriesdone && SERIES) return seriesSummary(navigate);
+  if (params.device && SERIES && !SERIES.ids.includes(Number(params.device))) SERIES = null; // Serie verlassen
   if (W && !W.saved && W.started && (!params.device || Number(params.device) === W.device.id)) return renderWizard(navigate);
   if (W?.saved || (W && params.device && Number(params.device) !== W.device.id)) W = null;
   if (params.device) return renderSetup(Number(params.device), navigate);
   return renderPicker(navigate);
+}
+
+// ---------------------------------------------------------------------------
+// Serienprüfung
+// ---------------------------------------------------------------------------
+function seriesNext(currentId) {
+  if (!SERIES) return null;
+  const i = SERIES.ids.indexOf(currentId);
+  return SERIES.ids.slice(i + 1).find((id) => !SERIES.results[id]) ?? SERIES.ids.find((id) => !SERIES.results[id] && id !== currentId) ?? null;
+}
+
+function seriesBar(currentId, navigate, { allowSkip = false } = {}) {
+  if (!SERIES || !SERIES.ids.includes(currentId)) return null;
+  const pos = SERIES.ids.indexOf(currentId) + 1;
+  const done = Object.keys(SERIES.results).length;
+  const skip = () => {
+    SERIES.results[currentId] = 'skip';
+    const next = seriesNext(currentId);
+    W = null;
+    if (next) navigate(`#/inspect?device=${next}`);
+    else navigate('#/inspect?seriesdone=1');
+  };
+  return h(
+    'div',
+    { class: 'series-bar' },
+    h('b', {}, `🔁 Serienprüfung: Gerät ${pos} von ${SERIES.ids.length}`),
+    h('span', { class: 'muted small' }, `${done} erledigt`),
+    h('div', { class: 'dots' }, SERIES.ids.map((id) => h('span', { class: `${{ bestanden: 'ok', nicht_bestanden: 'bad', skip: 'skip' }[SERIES.results[id]] || ''} ${id === currentId ? 'cur' : ''}`, title: SERIES.results[id] || 'offen' }))),
+    h('span', { style: { flex: 1 } }),
+    allowSkip ? h('button', { class: 'btn sm', onclick: skip }, 'Gerät überspringen') : null,
+    h('button', { class: 'btn sm ghost', onclick: async () => (await confirmDialog('Serienprüfung beenden? Bereits gespeicherte Prüfungen bleiben erhalten.')) && ((SERIES = null), (W = null), navigate('#/devices')) }, 'Serie beenden')
+  );
+}
+
+async function seriesSummary(navigate) {
+  const s = SERIES;
+  const devices = await Promise.all(s.ids.map((id) => get(`/devices/${id}`).then((r) => r.device).catch(() => null)));
+  const passed = s.ids.filter((id) => s.results[id] === 'bestanden');
+  const label = { bestanden: ['ok', 'bestanden'], nicht_bestanden: ['bad', 'nicht bestanden'], skip: ['muted', 'übersprungen'] };
+  return h(
+    'div',
+    {},
+    h('div', { class: 'page-head' }, h('h1', {}, '🔁 Serienprüfung abgeschlossen')),
+    h(
+      'div',
+      { class: 'card stack' },
+      h('p', {}, `${s.ids.length} Geräte: `, h('b', { style: { color: 'var(--ok)' } }, `${passed.length} bestanden`), ', ', h('b', { style: { color: 'var(--bad)' } }, `${s.ids.filter((id) => s.results[id] === 'nicht_bestanden').length} nicht bestanden`), `, ${s.ids.filter((id) => !s.results[id] || s.results[id] === 'skip').length} übersprungen/offen.`),
+      h('table', { class: 't' }, h('tbody', {}, devices.map((d, i) => (d ? h('tr', { class: 'click', onclick: () => navigate(`#/devices/${d.id}`) }, h('td', { class: 'mono' }, d.inventory_no), h('td', {}, d.name), h('td', {}, h('span', { class: `badge ${(label[s.results[s.ids[i]]] || ['muted'])[0]}` }, (label[s.results[s.ids[i]]] || [null, 'offen'])[1])), h('td', {}, d.next_due_date ? fmt.date(d.next_due_date) : '—')) : null)))),
+      h('div', { class: 'row' }, passed.length ? h('a', { class: 'btn primary', href: `/api/labels?ids=${passed.join(',')}`, target: '_blank' }, `🏷 Prüfplaketten für ${passed.length} bestandene Geräte`) : null, h('button', { class: 'btn', onclick: () => ((SERIES = null), navigate('#/devices')) }, 'Zur Geräteliste'))
+    )
+  );
 }
 
 async function renderPicker(navigate) {
@@ -108,6 +175,16 @@ async function renderSetup(deviceId, navigate) {
     reason: device.last_inspection_date ? 'wiederholung' : 'erstpruefung',
     profile: meta.settings.limitProfile,
   };
+  // Serienprüfung: Einstellungen des Vorgängers übernehmen (soweit für dieses Gerät möglich)
+  const tpl = SERIES?.ids.includes(deviceId) ? SERIES.template : null;
+  if (tpl) {
+    const p = procs.procedures.find((x) => x.id === tpl.cfg.procedureId && !x.disabled);
+    if (p) cfg.procedureId = p.id;
+    if (tpl.cfg.mode === 'manuell' || connected) cfg.mode = tpl.cfg.mode;
+    cfg.standard = tpl.cfg.standard;
+    cfg.profile = tpl.cfg.profile;
+  }
+  const copyChecks = h('input', { type: 'checkbox', checked: !!tpl?.checks && Object.keys(tpl.checks).length > 0 });
 
   const procBox = h('div', { class: 'grid c2' });
   const renderProcs = () => {
@@ -172,7 +249,16 @@ async function renderSetup(deviceId, navigate) {
         meterIdn: st?.identity ? [st.identity.model, st.identity.deviceId, st.identity.date].filter(Boolean).join(' · ') : null,
         saved: null,
         remoteActive: false,
+        prefilled: false,
       };
+      if (tpl) {
+        W.inspector = tpl.inspector || W.inspector;
+        if (copyChecks.checked && tpl.checks) {
+          const visual = proc.steps.find((x) => x.type === 'visual');
+          for (const it of visual?.items || []) if (tpl.checks[it.item]) W.checks[it.item] = { ...tpl.checks[it.item] };
+          W.prefilled = true;
+        }
+      }
       renderWizard(navigate).then((n) => clear(document.querySelector('.content')).appendChild(n));
     } catch (e) {
       clear(err).appendChild(h('div', { class: 'alert bad' }, e.message));
@@ -180,12 +266,16 @@ async function renderSetup(deviceId, navigate) {
   };
 
   const blockers = [];
+  const cal = meta.calibration;
+  if (['soon', 'overdue', 'unknown'].includes(cal?.state)) blockers.push(h('div', { class: `alert ${cal.state === 'overdue' ? 'bad' : 'warn'}` }, h('b', {}, '📏 Prüfmittel: '), calibrationText(cal), cal.state === 'overdue' ? ' Messwerte eines nicht kalibrierten Prüfgeräts sind nicht belastbar.' : '', ' ', h('a', { href: '#/settings/program' }, 'Kalibrierdaten')));
   if (device.status === 'ausgemustert') blockers.push(h('div', { class: 'alert info' }, 'Dieses Gerät ist ausgemustert. Eine Prüfung ist trotzdem möglich (z. B. Wiederinbetriebnahme).'));
   if (!procs.autoMode.allowed) blockers.push(h('div', { class: 'alert warn' }, h('b', {}, '⚠ Auto-Modus nicht möglich:'), procs.autoMode.reason));
 
   return h(
     'div',
     {},
+    seriesBar(deviceId, navigate, { allowSkip: true }),
+    tpl ? h('div', { class: 'alert info' }, h('b', {}, 'Vom vorherigen Gerät übernommen: '), `Prüfablauf, Durchführung, Norm und Grenzwerte${tpl.inspector ? ', Prüfer' : ''}. Bitte prüfen und bei Bedarf ändern.`, tpl.checks && Object.keys(tpl.checks).length ? h('label', { class: 'check', style: { marginTop: '6px' } }, copyChecks, 'Sichtprüfung vorausfüllen (jeden Punkt am Gerät kontrollieren!)') : null) : null,
     h('div', { class: 'page-head' }, h('div', {}, h('div', { class: 'muted mono' }, device.inventory_no), h('h1', {}, `Prüfung: ${device.name}`)), h('a', { class: 'btn ghost', href: `#/devices/${device.id}` }, 'Zum Gerät')),
     h('div', { class: 'card' }, h('div', { class: 'row' }, skSymbol(device.protection_class, 30), h('div', {}, h('b', {}, `${device.protection_class} · ${deviceTypeLabel(device.device_type)}`), h('div', { class: 'small muted' }, [device.manufacturer, device.model, device.location, device.cable_length_m ? `Leitung ${fmt.num(device.cable_length_m)} m` : null].filter(Boolean).join(' · ') || '—')), h('span', { class: 'grow', style: { flex: 1 } }), h('div', { class: 'small muted' }, 'Prüfdatum: ', h('b', {}, `${fmt.date(fmt.today())} (heute)`), ' – wird automatisch eingetragen'))),
     blockers,
@@ -281,6 +371,7 @@ function stepView(navigate, redraw) {
   return h(
     'div',
     {},
+    seriesBar(W.device.id, navigate),
     h('div', { class: 'page-head' }, h('div', {}, h('div', { class: 'muted' }, `${W.device.inventory_no} · ${procName(W.proc.id)}`), h('h1', {}, W.device.name)), h('div', { class: 'small muted' }, `Grenzwerte: ${state.meta.profiles.find((p) => p.id === W.cfg.profile)?.short} · ${W.cfg.standard}`)),
     (W.proc.warnings || []).map((w) => h('div', { class: 'alert warn small' }, '⚠ ', w)),
     progress,
@@ -389,6 +480,7 @@ function checksPanel(step, body, redraw, group) {
     }
   };
   draw();
+  if (W.prefilled && step.type === 'visual') body.appendChild(h('div', { class: 'alert warn small' }, h('b', {}, 'Serienprüfung:'), 'Die Antworten wurden vom vorherigen Gerät übernommen. Kontrolliere jeden Punkt an diesem Gerät und ändere ihn bei einem Mangel.'));
   add(body, h('div', { class: 'row end' }, h('button', { class: 'btn sm', onclick: () => (step.items.forEach((it) => (W.checks[it.item] = { group, label: it.label, passed: 1, note: '' })), draw()) }, '✓ Alle in Ordnung')), list);
 }
 
@@ -736,6 +828,11 @@ function resultPanel(step, body, navigate, redraw) {
         ...pl,
       });
       W.saved = r;
+      if (SERIES?.ids.includes(W.device.id)) {
+        SERIES.results[W.device.id] = r.inspection.result;
+        const visual = Object.fromEntries(Object.entries(W.checks).filter(([, c]) => c.group === 'sicht'));
+        SERIES.template = { cfg: { ...W.cfg }, checks: visual, inspector: W.inspector };
+      }
       if (r.invite?.ok) toast(`Kalendereinladung an ${r.invite.to.join(', ')} gesendet`, 'ok');
       else if (r.invite && !r.invite.ok) toast(`Kalendereinladung fehlgeschlagen: ${r.invite.error}`, 'warn', 7000);
       redraw();
@@ -791,7 +888,22 @@ function savedPanel(body, navigate) {
     h('div', { class: `result-big ${pass ? 'pass' : 'fail'}` }, pass ? '✔ Gespeichert – BESTANDEN' : '✘ Gespeichert – NICHT BESTANDEN'),
     h('p', {}, `Prüfdatum ${fmt.date(i.inspection_date)} wurde eingetragen. `, pass ? h('span', {}, 'Nächste Prüfung: ', h('b', {}, fmt.date(i.next_due_date))) : h('span', {}, 'Gerätestatus: ', h('b', {}, state.meta.deviceStatus[i.device.status]))),
     h('div', { class: 'row' }, h('a', { class: 'btn primary', href: `/api/inspections/${i.id}/report`, target: '_blank' }, '🖨 Prüfprotokoll'), h('a', { class: 'btn', href: `/api/labels?ids=${i.device_id}`, target: '_blank' }, '🏷 Prüfplakette'), pass ? h('a', { class: 'btn', href: `/api/calendar.ics?ids=${i.device_id}` }, '📅 Termin (.ics)') : null),
-    h('div', { class: 'row', style: { marginTop: '14px' } }, h('button', { class: 'btn', onclick: () => ((W = null), navigate(`#/devices/${i.device_id}`)) }, 'Zum Gerät'), h('button', { class: 'btn primary', onclick: () => ((W = null), navigate('#/inspect')) }, 'Nächstes Gerät prüfen →'))
+    seriesNav(i, navigate) ||
+      h('div', { class: 'row', style: { marginTop: '14px' } }, h('button', { class: 'btn', onclick: () => ((W = null), navigate(`#/devices/${i.device_id}`)) }, 'Zum Gerät'), h('button', { class: 'btn primary', onclick: () => ((W = null), navigate('#/inspect')) }, 'Nächstes Gerät prüfen →'))
+  );
+}
+
+function seriesNav(i, navigate) {
+  if (!SERIES?.ids.includes(i.device_id)) return null;
+  const next = seriesNext(i.device_id);
+  const remaining = SERIES.ids.filter((id) => !SERIES.results[id]).length;
+  return h(
+    'div',
+    { class: 'row', style: { marginTop: '14px' } },
+    next
+      ? h('button', { class: 'btn primary lg', onclick: () => ((W = null), navigate(`#/inspect?device=${next}`)) }, `Nächstes Gerät der Serie (noch ${remaining}) →`)
+      : h('button', { class: 'btn primary lg', onclick: () => ((W = null), navigate('#/inspect?seriesdone=1')) }, '✔ Serie abschließen – Übersicht'),
+    h('button', { class: 'btn', onclick: () => ((W = null), navigate(`#/devices/${i.device_id}`)) }, 'Zum Gerät')
   );
 }
 

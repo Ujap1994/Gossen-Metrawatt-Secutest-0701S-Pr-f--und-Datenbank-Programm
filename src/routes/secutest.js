@@ -4,6 +4,8 @@
  */
 const { asyncRouter } = require('./util');
 const { KEYS } = require('../secutest/protocol');
+const calibration = require('../secutest/calibration');
+const { esc, fold } = require('../reminders/ics');
 
 module.exports = function secutestRoutes(manager) {
   const r = asyncRouter();
@@ -47,6 +49,42 @@ module.exports = function secutestRoutes(manager) {
       }
     }
     res.json(manager.updateCfg(patch));
+  });
+
+  // ---------- Kalibrierung des Prüfgeräts (Einstellungen → Programm) ----------
+  r.get('/calibration', (req, res) => res.json(calibration.status({ identity: d().identity })));
+
+  r.put('/calibration', (req, res) => res.json(calibration.update(req.body || {})));
+
+  /** Kalibriernummer und Geräte-ID aus der IDN?-Antwort des verbundenen Geräts übernehmen */
+  r.post('/calibration/from-device', (req, res) => {
+    const id = d().identity;
+    if (!id) throw Object.assign(new Error('Kein SECUTEST verbunden bzw. keine Geräte-Identifikation (IDN?) vorhanden.'), { status: 409, code: 'NOT_CONNECTED' });
+    const patch = { calibrationNo: id.calibration || '', deviceId: id.deviceId || '' };
+    if (req.body?.lastDate) patch.lastDate = req.body.lastDate;
+    res.json(calibration.update(patch));
+  });
+
+  /** Kalendertermin für die nächste Kalibrierung */
+  r.get('/calibration.ics', (req, res) => {
+    const s = calibration.status();
+    if (!s.nextDate) return res.status(404).json({ error: 'Kein Kalibrierdatum hinterlegt.' });
+    const dv = (iso) => iso.replace(/-/g, '');
+    const next = new Date(s.nextDate + 'T00:00:00Z');
+    next.setUTCDate(next.getUTCDate() + 1);
+    const summary = 'Kalibrierung SECUTEST 0701S fällig';
+    const lines = [
+      'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Secutest Pruefmanager//DE', 'METHOD:PUBLISH',
+      'BEGIN:VEVENT', 'UID:kalibrierung-secutest@secutest-pruefmanager', `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '')}`,
+      `DTSTART;VALUE=DATE:${dv(s.nextDate)}`, `DTEND;VALUE=DATE:${next.toISOString().slice(0, 10).replace(/-/g, '')}`,
+      `SUMMARY:${esc(summary)}`,
+      `DESCRIPTION:${esc(`Prüfgerät zur Kalibrierung geben.\nLetzte Kalibrierung: ${s.lastDate.split('-').reverse().join('.')}${s.calibrationNo ? `\nKalibrier-Nr.: ${s.calibrationNo}` : ''}${s.deviceId ? `\nGeräte-ID: ${s.deviceId}` : ''}${s.lab ? `\nLabor/Zertifikat: ${s.lab}` : ''}`)}`,
+      'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${esc(summary)}`, `TRIGGER:-P${s.warnDays}D`, 'END:VALARM',
+      'END:VEVENT', 'END:VCALENDAR',
+    ];
+    res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="Kalibrierung_SECUTEST.ics"');
+    res.send(lines.map(fold).join('\r\n') + '\r\n');
   });
 
   r.get('/identify', async (req, res) => {

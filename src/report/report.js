@@ -117,7 +117,7 @@ function inspectionReport(insp, settings, { dbName }) {
     <tr><td>Prüfablauf</td><td>${e(proc ? `${proc.name} (Schalterstellung ${proc.switchPos})` : insp.procedure)}</td></tr>
     <tr><td>Durchführung</td><td>${e(MODES[insp.mode] || insp.mode)}</td></tr>
     <tr><td>Grenzwerte</td><td>${e(PROFILES[insp.limit_profile]?.name || insp.limit_profile || '—')}</td></tr>
-    <tr><td>Messgerät</td><td>Gossen Metrawatt SECUTEST 0701S${insp.meter_idn ? ` – ${e(insp.meter_idn)}` : ''}</td></tr>
+    <tr><td>Messgerät</td><td>Gossen Metrawatt SECUTEST 0701S${insp.meter_idn ? ` – ${e(insp.meter_idn)}` : ''}${insp.meter_calibration ? `<br><span class="small">${e(insp.meter_calibration)}</span>` : ''}</td></tr>
   </table>
 
   <h2>Sichtprüfung</h2>
@@ -144,10 +144,27 @@ function inspectionReport(insp, settings, { dbName }) {
 </div></body></html>`;
 }
 
-async function labelSheet(devices, settings) {
+/**
+ * Inhalt des QR-Codes einer Prüfplakette – lesbar für Menschen und für den QR-Scanner des Programms:
+ * „G-0001 | Wasserkocher | nächste Prüfung 2027-10-13 | DB 1a2b3c4d“ (DB = Kennung der Datenbank)
+ */
+function labelCode(d, dbUuid) {
+  return `${d.inventory_no} | ${d.name} | nächste Prüfung ${d.next_due_date || '-'}${dbUuid ? ` | DB ${String(dbUuid).replace(/-/g, '').slice(0, 8)}` : ''}`;
+}
+
+/** Gegenstück zu labelCode: Inventarnummer und Datenbank-Kennung aus gescanntem Text */
+function parseLabelCode(text) {
+  const t = String(text || '').trim();
+  if (!t) return null;
+  const parts = t.split('|').map((x) => x.trim()).filter(Boolean);
+  const db = parts.map((x) => x.match(/^DB\s+([0-9a-f]{8})$/i)).find(Boolean)?.[1]?.toLowerCase() || null;
+  return { code: parts[0] || t, db, raw: t };
+}
+
+async function labelSheet(devices, settings, { dbUuid } = {}) {
   const items = await Promise.all(
     devices.map(async (d) => {
-      const qr = await QRCode.toString(`${d.inventory_no} | ${d.name} | nächste Prüfung ${d.next_due_date || '-'}`, { type: 'svg', margin: 0, errorCorrectionLevel: 'M' });
+      const qr = await QRCode.toString(labelCode(d, dbUuid), { type: 'svg', margin: 0, errorCorrectionLevel: 'M' });
       return { d, qr };
     })
   );
@@ -181,4 +198,4 @@ async function labelSheet(devices, settings) {
     .join('')}</div></body></html>`;
 }
 
-module.exports = { inspectionReport, labelSheet, DEVICE_TYPES, MODES };
+module.exports = { labelCode, parseLabelCode, inspectionReport, labelSheet, DEVICE_TYPES, MODES };

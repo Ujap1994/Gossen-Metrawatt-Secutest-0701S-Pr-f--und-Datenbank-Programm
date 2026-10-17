@@ -2,6 +2,7 @@ import { h, fmt, dueBadge, resultBadge, skSymbol } from '../ui.js';
 import { get } from '../api.js';
 import { state, procName } from '../state.js';
 import { postponeDialog } from '../duedialogs.js';
+import { calibrationText } from './settings.js';
 
 export async function renderDashboard({ navigate }) {
   const { stats, due, recent } = await get('/dashboard');
@@ -19,6 +20,9 @@ export async function renderDashboard({ navigate }) {
       stat(stats.soon, 'in den nächsten 30 Tagen fällig', stats.soon ? 'warn' : '', '#/devices?due=soon'),
       stat(stats.blocked, 'gesperrt / in Reparatur', stats.blocked ? 'bad' : '', '#/devices?status=gesperrt')
     ),
+    ['soon', 'overdue', 'unknown'].includes(state.meta?.calibration?.state)
+      ? h('div', { class: `alert ${state.meta.calibration.state === 'overdue' ? 'bad' : 'warn'}` }, h('b', {}, '📏 Prüfmittel: '), calibrationText(state.meta.calibration), ' ', h('a', { href: '#/settings/program' }, 'Kalibrierdaten bearbeiten'))
+      : null,
     stats.never ? h('div', { class: 'alert warn' }, h('b', {}, `${stats.never} Gerät(e)`), 'wurden noch nie geprüft. ', h('a', { href: '#/devices?due=never' }, 'Anzeigen')) : null,
     !s?.connected
       ? h('div', { class: 'alert info' }, h('b', {}, 'SECUTEST nicht verbunden.'), 'USB-RS232-Adapter einstecken – das Programm sucht automatisch. Oder ', h('a', { href: '#/secutest' }, 'manuell verbinden / Simulator starten'), '. Prüfen geht auch ohne Gerät (manuelle Eingabe).')

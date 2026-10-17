@@ -9,6 +9,7 @@ import { renderDashboard } from './views/dashboard.js';
 import { renderDeviceList, renderDeviceForm, renderDeviceDetail } from './views/devices.js';
 import { renderInspect, renderInspectionDetail, wizardDirty } from './views/inspect.js';
 import { renderSecutest } from './views/secutest.js';
+import { renderScan } from './views/scan.js';
 import { renderSettings, renderSecuritySettings, renderProgramSettings, renderReminders, renderAudit, renderInspections } from './views/settings.js';
 
 const root = document.getElementById('app');
@@ -46,6 +47,7 @@ const ROUTES = [
   [/^#\/inspections$/, () => renderInspections],
   [/^#\/inspections\/(\d+)$/, () => renderInspectionDetail],
   [/^#\/secutest$/, () => renderSecutest],
+  [/^#\/scan$/, () => renderScan],
   [/^#\/reminders$/, () => renderReminders],
   [/^#\/settings$/, () => renderSettings],
   [/^#\/settings\/security$/, () => renderSecuritySettings],
@@ -57,6 +59,7 @@ const NAV = [
   ['#/dashboard', '🏠', 'Übersicht'],
   ['#/devices', '🔌', 'Geräte'],
   ['#/inspect', '✅', 'Prüfen'],
+  ['#/scan', '📷', 'Plakette scannen'],
   ['#/inspections', '📋', 'Prüfungen'],
   ['#/secutest', '📟', 'SECUTEST'],
   ['#/reminders', '⏰', 'Erinnerungen'],

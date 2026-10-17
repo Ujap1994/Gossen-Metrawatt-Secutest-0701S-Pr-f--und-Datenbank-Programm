@@ -150,6 +150,11 @@ const MIGRATIONS = [
   ALTER TABLE devices ADD COLUMN postponed_from TEXT;                     -- ursprünglicher Termin vor dem (ersten) Verschieben
   ALTER TABLE devices ADD COLUMN postpone_count INTEGER NOT NULL DEFAULT 0; -- wie oft seit der letzten Prüfung verschoben
   `,
+  // ---------- Version 3: Einsatzbereich (Intervallvorschlag DGUV V3), Kalibrierung des Prüfgeräts ----------
+  `
+  ALTER TABLE devices ADD COLUMN usage_env TEXT;              -- baustelle | werkstatt | buero | privat
+  ALTER TABLE inspections ADD COLUMN meter_calibration TEXT;  -- Kalibrierstand des SECUTEST zum Prüfzeitpunkt
+  `,
 ];
 
 module.exports = { MIGRATIONS, SCHEMA_VERSION: MIGRATIONS.length };

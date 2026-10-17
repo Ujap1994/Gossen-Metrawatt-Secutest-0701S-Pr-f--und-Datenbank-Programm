@@ -14,7 +14,9 @@ const { PROFILES, QUANTITIES, limitsFor } = require('../vde/limits');
 const { FAIL_ACTIONS, DEVICE_STATUS } = require('../vde/actions');
 const { runReminders, sendCalendarInvite, autoCalendarUpdate, calendarFor } = require('../reminders/scheduler');
 const { sendMail, PRESETS, smtpConfigured } = require('../reminders/mailer');
-const { inspectionReport, labelSheet, DEVICE_TYPES, MODES } = require('../report/report');
+const { inspectionReport, labelSheet, parseLabelCode, DEVICE_TYPES, MODES } = require('../report/report');
+const { ENVIRONMENTS, suggestInterval } = require('../vde/dguv');
+const calibration = require('../secutest/calibration');
 const totp = require('../auth/totp');
 const { AuthError, SessionManager } = require('../auth/session');
 
@@ -38,6 +40,8 @@ module.exports = function dataRoutes(sessions, scheduler) {
       db: { id: req.dbEntry.id, name: sdb.getMeta('db_name'), uuid: sdb.getMeta('db_uuid'), created_at: sdb.getMeta('created_at'), file: sdb.file, host: os.hostname(), provider: providerForPath(sdb.file) },
       settings: repo.publicSettings(repo.getSettings(sdb)),
       security: SessionManager.security(sdb),
+      calibration: calibration.status(),
+      environments: Object.entries(ENVIRONMENTS).map(([id, e]) => ({ id, label: e.label, base: e.base, max: e.max, dguv: e.dguv })),
       recoveryRemaining: sdb.getJson('recovery_codes', []).length,
       procedures: listProcedures(),
       actions: FAIL_ACTIONS,
@@ -175,6 +179,23 @@ module.exports = function dataRoutes(sessions, scheduler) {
   // ---------- Geräte ----------
   r.get('/devices', (req, res) => res.json(repo.listDevices(req.sdb, req.query)));
   r.post('/devices', (req, res) => res.status(201).json(repo.createDevice(req.sdb, req.body || {})));
+  /** QR-Scanner: Gerät zu gescanntem Plaketten-Text (oder Inventar-/Seriennummer) finden */
+  r.get('/devices/lookup', (req, res) => {
+    const parsed = parseLabelCode(req.query.code);
+    if (!parsed) return res.status(400).json({ error: 'Kein Code übergeben.' });
+    const own = String(req.sdb.getMeta('db_uuid') || '').replace(/-/g, '').slice(0, 8).toLowerCase();
+    const find = (sql, v) => req.sdb.db.prepare(sql).get(v);
+    const row =
+      find('SELECT id FROM devices WHERE inventory_no = ? COLLATE NOCASE', parsed.code) ||
+      find('SELECT id FROM devices WHERE serial_no = ? COLLATE NOCASE', parsed.code) ||
+      (parsed.raw !== parsed.code ? null : find('SELECT id FROM devices WHERE inventory_no = ? COLLATE NOCASE', parsed.raw.replace(/\s+/g, '')));
+    const otherDb = !!(parsed.db && own && parsed.db !== own);
+    if (!row) {
+      return res.status(404).json({ error: otherDb ? 'Diese Prüfplakette gehört zu einer anderen Datenbank. Bitte die passende Datenbank öffnen.' : `Kein Gerät mit „${parsed.code}“ gefunden.`, code: otherDb ? 'OTHER_DB' : 'NOT_FOUND', parsed });
+    }
+    res.json({ device: repo.getDevice(req.sdb, row.id), parsed, otherDb });
+  });
+
   r.get('/devices/:id', (req, res) => res.json(repo.getDeviceDetail(req.sdb, Number(req.params.id))));
   r.put('/devices/:id', async (req, res) => {
     const id = Number(req.params.id);
@@ -200,6 +221,18 @@ module.exports = function dataRoutes(sessions, scheduler) {
   });
   r.delete('/devices/:id', (req, res) => res.json(repo.deleteDevice(req.sdb, Number(req.params.id))));
   r.post('/devices/:id/duplicate', (req, res) => res.status(201).json(repo.duplicateDevice(req.sdb, Number(req.params.id))));
+
+  /** Gleiche Geräte mehrfach anlegen (für Serienprüfungen) */
+  r.post('/devices/:id/duplicate-many', (req, res) => res.status(201).json(repo.duplicateDeviceMany(req.sdb, Number(req.params.id), { count: req.body?.count, numbering: req.body?.numbering !== false })));
+
+  /** Intervallvorschlag nach DGUV V3 für ein oder mehrere Geräte */
+  r.post('/devices/interval-suggestions', (req, res) => {
+    const ids = (Array.isArray(req.body?.ids) ? req.body.ids : []).map(Number).filter(Boolean).slice(0, 2000);
+    const settings = repo.getSettings(req.sdb);
+    const override = req.body?.usage_env && ENVIRONMENTS[req.body.usage_env] ? req.body.usage_env : null;
+    const devices = ids.length ? ids.map((id) => repo.getDevice(req.sdb, id)) : [{ id: 0, device_type: req.body?.device_type || 'standard' }];
+    res.json(devices.map((d) => ({ id: d.id, name: d.name, current: d.interval_months, ...suggestInterval(req.sdb, override ? { ...d, usage_env: override } : d, { defaultEnv: settings.defaultUsageEnv || 'privat' }) })));
+  });
 
   /** Vorschlag Geräteart + Auto-Modus-Prüfung für (noch nicht gespeicherte) Gerätedaten */
   r.post('/devices/suggest', (req, res) => {
@@ -258,7 +291,11 @@ module.exports = function dataRoutes(sessions, scheduler) {
   r.get('/inspections', (req, res) => res.json(repo.listInspections(req.sdb, { limit: Math.min(Number(req.query.limit) || 100, 2000), from: req.query.from, to: req.query.to })));
 
   r.post('/inspections', async (req, res) => {
-    const out = repo.saveInspection(req.sdb, req.body || {});
+    const body = { ...(req.body || {}) };
+    // Kalibrierstand des Prüfgeräts im Protokoll festhalten (wenn die Kalibrier-Erinnerung eingeschaltet ist)
+    const cal = calibration.status();
+    if (!body.meter_calibration && cal.enabled && cal.lastDate) body.meter_calibration = calibration.protocolText(cal);
+    const out = repo.saveInspection(req.sdb, body);
     let invite = null;
     const settings = repo.getSettings(req.sdb);
     const r = settings.reminders;
@@ -287,7 +324,7 @@ module.exports = function dataRoutes(sessions, scheduler) {
       .map(Number)
       .filter(Boolean);
     const devices = ids.length ? ids.map((id) => repo.getDevice(req.sdb, id)) : repo.listDevices(req.sdb, { status: 'alle-aktiven' });
-    res.type('html').send(await labelSheet(devices, repo.getSettings(req.sdb)));
+    res.type('html').send(await labelSheet(devices, repo.getSettings(req.sdb), { dbUuid: req.sdb.getMeta('db_uuid') }));
   });
 
   // ---------- Kalender & Erinnerungen ----------

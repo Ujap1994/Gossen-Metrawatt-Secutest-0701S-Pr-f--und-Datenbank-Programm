@@ -4,6 +4,64 @@ Alle Änderungen am Secutest Prüfmanager, die neueste oben. Der jeweils oberste
 
 > ⚠ Open-Source-Software ohne Gewähr. Prüfungen nur durch Elektrofachkräfte. Siehe [Haftungsausschluss](README.md#haftungsausschluss).
 
+## 1.3.0 – QR-Scanner, Serienprüfung, Intervallvorschlag nach DGUV V3, Kalibrier-Erinnerung
+
+### Neu: Prüfplaketten scannen
+Neuer Menüpunkt **📷 Plakette scannen**. Drei Wege führen zum Gerät:
+* **Kamera:** Webcam oder eingebaute Kamera auf den QR-Code der Prüfplakette richten.
+* **USB-Handscanner:** Die Scanner arbeiten wie eine Tastatur, einfach auslösen. Eintippen geht genauso, auch mit Inventar- oder Seriennummer.
+* **Foto/Bild:** ein Bild der Plakette auswählen.
+
+Danach wahlweise *Gerät anzeigen*, *gleich prüfen* oder *hier bleiben* und die nächste Plakette scannen. Neue Plaketten tragen im QR-Code eine kurze Kennung der Datenbank. Gehört eine Plakette zu einer anderen Datenbank, sagt das Programm das deutlich. Ältere Plaketten funktionieren weiterhin.
+
+<img src="docs/images/82-plakette-scannen.png" alt="Prüfplakette scannen" width="720">
+
+### Neu: Serienprüfung gleicher Geräte
+* **⧉× Mehrfach anlegen** (im Gerätedetail): z. B. aus einer Verlängerungsleitung 10 identische machen. Jede Kopie bekommt eine eigene Inventarnummer, auf Wunsch durchnummeriert („#1“, „#2“ …).
+* **▶ Serienprüfung** für mehrere ausgewählte Geräte (Geräteliste) oder direkt nach dem Mehrfach-Anlegen. Die Geräte werden nacheinander geprüft:
+  * Prüfablauf, Durchführung, Norm, Grenzwerte und Prüfer werden vom vorherigen Gerät übernommen.
+  * Die Sichtprüfung lässt sich vorausfüllen, mit dem deutlichen Hinweis, jeden Punkt am Gerät zu kontrollieren.
+  * Eine Leiste zeigt den Fortschritt. Geräte lassen sich überspringen.
+  * Am Ende gibt es eine Übersicht mit allen Ergebnissen und **Prüfplaketten für alle bestandenen Geräte** auf einen Klick.
+
+<img src="docs/images/83-mehrfach-anlegen.png" alt="Mehrfach anlegen" width="420"> <img src="docs/images/85-serienpruefung-sicht-uebernommen.png" alt="Serienprüfung – Sichtprüfung übernommen" width="560">
+
+<img src="docs/images/86-serienpruefung-ergebnis.png" alt="Serienprüfung – Ergebnis" width="720">
+
+### Neu: Intervallvorschlag nach DGUV Vorschrift 3
+Jedes Gerät hat jetzt einen **Einsatzbereich**: Baustelle, Werkstatt/Fertigung, Büro oder Privathaushalt. Den Standard für neue Geräte legst du in den Einstellungen fest. Der Knopf **💡 Vorschlag nach DGUV V3** steht im Geräteformular und im Dialog „Prüfintervall ändern“ (dort je Gerät). Er schlägt das Prüfintervall nach DGUV Vorschrift 3, Tabelle 1B vor:
+* **Richtwert:** 6 Monate, auf Baustellen 3 Monate.
+* **Verlängerung** bis zum **Maximalwert** (Werkstatt 1 Jahr, Büro 2 Jahre), wenn die **Fehlerquote** der Datenbank in den letzten 24 Monaten **unter 2 %** liegt. Dafür braucht es mindestens 10 Prüfungen.
+* **Kürzer** bleibt es bei Geräten, die schon einmal durchgefallen sind. Verlängerungsleitungen bekommen höchstens 12 Monate.
+* **Privathaushalt:** Hier gilt die DGUV V3 nicht. Das Programm empfiehlt 12 Monate, bei seltener Nutzung bis 24.
+
+Jeder Vorschlag nennt seine Begründung. Er ist ohne Gewähr; maßgeblich bleibt die Gefährdungsbeurteilung des Betreibers.
+
+<img src="docs/images/87-dguv-vorschlag-geraet.png" alt="Vorschlag im Geräteformular" width="720">
+
+<img src="docs/images/88-dguv-vorschlag-mehrere.png" alt="Vorschlag für mehrere Geräte" width="640">
+
+### Neu: Kalibrier-Erinnerung für das SECUTEST
+Unter *Einstellungen → Programm* lässt sich die Erinnerung **ein- und ausschalten**. Einzutragen sind:
+* Datum der letzten Kalibrierung, Kalibrierintervall und Vorwarnzeit,
+* Geräte-ID, Kalibrier-Nr. und Labor bzw. Zertifikat.
+
+Geräte-ID und Kalibrier-Nr. lassen sich per IDN? aus dem verbundenen Gerät übernehmen.
+
+Mit eingeschalteter Erinnerung:
+* Rechtzeitig vor dem Ablauf warnen die **Übersicht** und der **Prüfassistent**.
+* Der Kalibrierstand steht in **jedem Prüfprotokoll**.
+* Den Termin gibt es als Kalenderdatei (.ics).
+* Meldet das SECUTEST eine neue Kalibrier-Nr., weist das Programm darauf hin.
+
+<img src="docs/images/80-kalibrierung-einstellungen.png" alt="Kalibrierung in den Einstellungen" width="720">
+
+<img src="docs/images/81-kalibrierung-warnung.png" alt="Kalibrier-Warnung in der Übersicht" width="720">
+
+### Verbessert
+* **Release-Seite:** Die Download-Tabelle nennt ausschließlich Dateien, die wirklich im Release liegen. Vor dem Veröffentlichen prüft ein Schritt, ob alle Pflichtpakete gebaut wurden; sonst wird nicht veröffentlicht. Fehlt ausnahmsweise ein optionales Paket (Flatpak, Snap, ARM64-AppImage), steht das unter „Diesmal nicht enthalten“. Die Prüfung läuft bereits in Pull Requests.
+* Neue Tests für Intervallvorschlag, Mehrfach-Anlegen, Plaketten-Suche und Kalibrierung (jetzt 47 Tests).
+
 ## 1.2.0 – Passwort & 2FA optional, Speicherort frei wählbar, Erinnerungen nach Wunsch
 
 ### Neu: Passwort und Zwei-Faktor-Anmeldung sind freiwillig
@@ -60,6 +118,8 @@ Unter *Einstellungen → Programm* lässt sich das Terminal auf der SECUTEST-Sei
 * Neue Tests für Verschlüsselung an/aus, optionale 2FA, Verschieben der Datenbank, Termine verschieben, Intervalländerung, monatliche Bündelung und Terminal-Schalter (jetzt 42 Tests).
 
 ## 1.1.0 – Pakete für alle Plattformen, „Programm beenden“
+
+_Nicht als eigenes Release erschienen: Die Veröffentlichung wurde durch einen gestörten openSUSE-Spiegelserver blockiert. Alle Inhalte sind ab 1.2.0 enthalten._
 
 ### Neu: Installationspakete für fast jedes System
 <img src="packaging/icons/icon-128.png" alt="Programm-Icon" width="96" align="right">

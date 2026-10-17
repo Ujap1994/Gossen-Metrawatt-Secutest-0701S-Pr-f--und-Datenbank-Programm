@@ -240,8 +240,9 @@ jobs:
           esac
 
   publish:
+    name: Pakete prüfen & veröffentlichen
     needs: [build, smoke, distros, flatpak, snap]
-    if: ${{ always() && github.event_name != 'pull_request' && needs.build.result == 'success' && needs.smoke.result == 'success' && needs.distros.result == 'success' }}
+    if: ${{ always() && needs.build.result == 'success' && needs.smoke.result == 'success' && needs.distros.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -270,7 +271,13 @@ jobs:
           cd ..
           node scripts/release-notes.js "$VERSION" release > notes.md
           cat notes.md
+      # Nur veröffentlichen, wenn alle Pflichtpakete gebaut wurden – die Download-Tabelle nennt ausschließlich vorhandene Dateien
+      - name: Vollständigkeit prüfen
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: node scripts/release-notes.js "$VERSION" release --check
       - name: GitHub-Release veröffentlichen
+        if: ${{ github.event_name != 'pull_request' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.build.outputs.version }}

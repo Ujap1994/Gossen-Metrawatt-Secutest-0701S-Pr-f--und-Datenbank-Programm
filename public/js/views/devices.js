@@ -60,6 +60,7 @@ export async function renderDeviceList({ params, navigate }) {
     add(
       bulk,
       h('span', { class: 'muted' }, `${selected.size} ausgewählt:`),
+      selected.size > 1 ? h('a', { class: 'btn sm primary', href: `#/inspect?series=${chosen().map((d) => d.id).join(',')}`, title: 'Die ausgewählten Geräte nacheinander prüfen – Einstellungen werden vom vorherigen Gerät übernommen' }, '▶ Serienprüfung') : null,
       h('button', { class: 'btn sm', title: 'Prüftermin auf den nächsten Monat oder ein Datum verschieben', onclick: async () => (await postponeDialog(chosen())) && load() }, '⏭ Termin verschieben'),
       h('button', { class: 'btn sm', title: 'Prüfintervall dieser Geräte ändern', onclick: async () => (await intervalDialog(chosen())) && load() }, '⏱ Prüfintervall ändern'),
       h('a', { class: 'btn sm', href: `/api/labels?ids=${ids}`, target: '_blank' }, '🏷 Plaketten'),
@@ -126,6 +127,30 @@ export async function renderDeviceForm({ args, params, navigate }) {
   f.status = select(Object.entries(STATUS_LABEL), d.status, { name: 'status' });
   f.interval_months = select(INTERVAL_PRESETS.some(([v]) => v === Number(d.interval_months)) ? INTERVAL_PRESETS : [...INTERVAL_PRESETS, [d.interval_months, `${d.interval_months} Monate`]], d.interval_months, { name: 'interval_months' });
   f.reminder_enabled = h('input', { type: 'checkbox', name: 'reminder_enabled', checked: !!d.reminder_enabled });
+  f.usage_env = select([['', '— nicht festgelegt —'], ...meta.environments.map((e) => [e.id, e.label])], d.usage_env ?? (id ? '' : meta.settings.defaultUsageEnv || ''), { name: 'usage_env', onchange: () => clear(suggestBox) });
+  const suggestBox = h('div');
+  const suggest = async () => {
+    try {
+      const [sg] = await post('/devices/interval-suggestions', { ids: id ? [id] : [], usage_env: f.usage_env.value || null, device_type: f.device_type.value });
+      fill(
+        suggestBox,
+        h(
+          'div',
+          { class: 'suggest-box' },
+          h('div', { class: 'row between' }, h('div', {}, h('b', {}, `💡 Vorschlag: ${sg.months} Monate`), h('span', { class: 'muted small' }, ` · Richtwert ${sg.base}, höchstens ${sg.max} Monate${sg.dguv ? ' (DGUV V3, Tab. 1B)' : ' (Empfehlung)'}`)), h('button', { type: 'button', class: 'btn sm primary', onclick: () => setInterval_(sg.months) }, 'Übernehmen')),
+          h('ul', { class: 'small' }, sg.reasons.map((r) => h('li', {}, r))),
+          h('div', { class: 'small muted' }, 'Ohne Gewähr – maßgeblich ist die Gefährdungsbeurteilung des Betreibers (BetrSichV, TRBS 1201).')
+        )
+      );
+    } catch (e) {
+      toast(e.message, 'bad');
+    }
+  };
+  const setInterval_ = (m) => {
+    if (![...f.interval_months.options].some((o) => Number(o.value) === m)) f.interval_months.appendChild(h('option', { value: m }, `${m} Monate`));
+    f.interval_months.value = String(m);
+    toast(`Prüfintervall auf ${m} Monate gesetzt – Speichern nicht vergessen`, 'ok');
+  };
   f.notes = h('textarea', { class: 'input', name: 'notes' }, d.notes || '');
   const heatingField = field('Heizleistung (kW)', inp('heating_power_kw', { type: 'number', step: '0.1', min: 0 }), 'für Grenzwerte bei Heizgeräten');
 
@@ -182,7 +207,14 @@ export async function renderDeviceForm({ args, params, navigate }) {
     h('fieldset', {}, h('legend', {}, 'Schutzklasse'), skRadio),
     hintBox,
     h('fieldset', {}, h('legend', {}, 'Elektrische Daten'), h('div', { class: 'grid c3' }, field('Geräteart', f.device_type), field('Anschluss', f.connection_type), field('Phasen', f.phases), field('Nennspannung (V)', inp('rated_voltage', { type: 'number', step: 'any', placeholder: '230' })), field('Nennleistung (W)', inp('rated_power', { type: 'number', step: 'any', oninput: () => check() })), field('Nennstrom (A)', inp('rated_current', { type: 'number', step: 'any' })), heatingField, field('Leitungslänge (m)', inp('cable_length_m', { type: 'number', step: '0.1', min: 0, oninput: () => check() }), 'über 5 m erhöht sich der R_SL-Grenzwert'), field('Querschnitt (mm²)', inp('cable_cross_section', { type: 'number', step: 'any', placeholder: '1,5' }))), limitBox),
-    h('fieldset', {}, h('legend', {}, 'Prüfung & Erinnerung'), h('div', { class: 'grid c3' }, field('Prüfintervall', f.interval_months), field('Status', f.status), field('Nächste Prüfung (optional manuell)', inp('next_due_date', { type: 'date' }), 'wird nach jeder Prüfung automatisch berechnet')), h('label', { class: 'check', style: { marginTop: '10px' } }, f.reminder_enabled, 'Prüferinnerung per Mail/Kalender für dieses Gerät')),
+    h(
+      'fieldset',
+      {},
+      h('legend', {}, 'Prüfung & Erinnerung'),
+      h('div', { class: 'grid c3' }, field('Einsatzbereich', f.usage_env, 'für den Intervallvorschlag nach DGUV V3'), field('Prüfintervall', h('div', { class: 'stack' }, f.interval_months, h('button', { type: 'button', class: 'btn sm', onclick: suggest }, '💡 Vorschlag nach DGUV V3'))), field('Status', f.status), field('Nächste Prüfung (optional manuell)', inp('next_due_date', { type: 'date' }), 'wird nach jeder Prüfung automatisch berechnet')),
+      suggestBox,
+      h('label', { class: 'check', style: { marginTop: '10px' } }, f.reminder_enabled, 'Prüferinnerung per Mail/Kalender für dieses Gerät')
+    ),
     h('fieldset', {}, h('legend', {}, 'Notizen'), f.notes),
     datalist('dl-cat', meta.distinct.category),
     datalist('dl-loc', meta.distinct.location),
@@ -221,6 +253,42 @@ export async function renderDeviceDetail({ args, navigate }) {
     navigate('#/devices');
   };
 
+  const duplicateMany = async () => {
+    const count = input({ type: 'number', min: 1, max: 200, value: 9, style: { maxWidth: '110px' } });
+    const numbering = h('input', { type: 'checkbox', checked: true });
+    const r = await modal({
+      title: `„${d.name}“ mehrfach anlegen`,
+      body: h(
+        'div',
+        { class: 'stack' },
+        h('p', {}, 'Für gleiche Geräte, z. B. 10 identische Verlängerungsleitungen: Alle Gerätedaten werden kopiert, jede Kopie bekommt eine eigene Inventarnummer.'),
+        field('Anzahl zusätzlicher Geräte', count),
+        h('label', { class: 'check' }, numbering, `Durchnummerieren („${d.name.replace(/\s+#\d+$/, '')} #1“, „#2“ …)`),
+        h('p', { class: 'small muted' }, 'Seriennummern werden nicht kopiert – bei Bedarf danach je Gerät eintragen.')
+      ),
+      actions: [
+        { label: 'Abbrechen', value: null },
+        {
+          label: 'Anlegen',
+          class: 'primary',
+          onClick: async () => {
+            try {
+              return await post(`/devices/${id}/duplicate-many`, { count: Number(count.value), numbering: numbering.checked });
+            } catch (e) {
+              toast(e.message, 'bad');
+              return false;
+            }
+          },
+        },
+      ],
+    });
+    if (!r) return;
+    toast(`${r.created.length} Geräte angelegt (${r.created[0].inventory_no} … ${r.created[r.created.length - 1].inventory_no})`, 'ok', 6000);
+    const ids = [id, ...r.created.map((x) => x.id)];
+    if (await confirmDialog(`Jetzt alle ${ids.length} Geräte nacheinander als Serie prüfen?`, { title: 'Serienprüfung starten?', confirmLabel: '▶ Serienprüfung starten' })) navigate(`#/inspect?series=${ids.join(',')}`);
+    else navigate('#/devices?sort=inventory');
+  };
+
   const invite = async () => {
     try {
       const r = await post(`/devices/${id}/invite`);
@@ -251,12 +319,12 @@ export async function renderDeviceDetail({ args, navigate }) {
   return h(
     'div',
     {},
-    h('div', { class: 'page-head' }, h('div', {}, h('div', { class: 'muted mono' }, d.inventory_no), h('h1', {}, d.name)), h('div', { class: 'row' }, h('a', { class: 'btn primary', href: `#/inspect?device=${id}` }, '✅ Jetzt prüfen'), h('a', { class: 'btn', href: `#/devices/${id}/edit` }, '✏️ Bearbeiten'), h('button', { class: 'btn', onclick: async () => navigate(`#/devices/${(await post(`/devices/${id}/duplicate`)).id}/edit`) }, '⧉ Duplizieren'), h('button', { class: 'btn danger', onclick: remove }, '🗑 Löschen'))),
+    h('div', { class: 'page-head' }, h('div', {}, h('div', { class: 'muted mono' }, d.inventory_no), h('h1', {}, d.name)), h('div', { class: 'row' }, h('a', { class: 'btn primary', href: `#/inspect?device=${id}` }, '✅ Jetzt prüfen'), h('a', { class: 'btn', href: `#/devices/${id}/edit` }, '✏️ Bearbeiten'), h('button', { class: 'btn', onclick: async () => navigate(`#/devices/${(await post(`/devices/${id}/duplicate`)).id}/edit`) }, '⧉ Duplizieren'), h('button', { class: 'btn', onclick: duplicateMany, title: 'Gleiche Geräte mehrfach anlegen, z. B. für eine Serienprüfung' }, '⧉× Mehrfach anlegen'), h('button', { class: 'btn danger', onclick: remove }, '🗑 Löschen'))),
     d.status !== 'aktiv' ? h('div', { class: `alert ${d.status === 'ausgemustert' ? 'info' : 'bad'}` }, h('b', {}, `Status: ${STATUS_LABEL[d.status]}.`), d.status === 'ausgemustert' ? 'Gerät wird nicht mehr geprüft.' : 'Gerät darf bis zur bestandenen Nachprüfung NICHT benutzt werden.') : null,
     h(
       'div',
       { class: 'grid c2' },
-      h('div', { class: 'card' }, h('h2', {}, 'Gerätedaten'), h('dl', { class: 'kv' }, kv('Schutzklasse', h('span', {}, skSymbol(d.protection_class, 18), ' ', d.protection_class)), kv('Geräteart', deviceTypeLabel(d.device_type)), kv('Hersteller / Typ', [d.manufacturer, d.model].filter(Boolean).join(' / ')), kv('Serien-Nr.', d.serial_no), kv('Kategorie', d.category), kv('Standort', d.location), kv('Eigentümer', d.owner), kv('Nennwerte', [d.rated_voltage && `${d.rated_voltage} V`, d.rated_power && `${d.rated_power} W`, d.rated_current && `${d.rated_current} A`].filter(Boolean).join(' · ')), kv('Leitung', d.cable_length_m ? `${fmt.num(d.cable_length_m)} m${d.cable_cross_section ? ` · ${d.cable_cross_section} mm²` : ''}` : null), kv('Kaufdatum', d.purchase_date ? fmt.date(d.purchase_date) : null)), d.notes ? h('p', { class: 'muted', style: { marginTop: '10px', whiteSpace: 'pre-wrap' } }, d.notes) : null),
+      h('div', { class: 'card' }, h('h2', {}, 'Gerätedaten'), h('dl', { class: 'kv' }, kv('Schutzklasse', h('span', {}, skSymbol(d.protection_class, 18), ' ', d.protection_class)), kv('Geräteart', deviceTypeLabel(d.device_type)), kv('Hersteller / Typ', [d.manufacturer, d.model].filter(Boolean).join(' / ')), kv('Serien-Nr.', d.serial_no), kv('Kategorie', d.category), kv('Standort', d.location), kv('Einsatzbereich', meta.environments.find((e) => e.id === d.usage_env)?.label), kv('Eigentümer', d.owner), kv('Nennwerte', [d.rated_voltage && `${d.rated_voltage} V`, d.rated_power && `${d.rated_power} W`, d.rated_current && `${d.rated_current} A`].filter(Boolean).join(' · ')), kv('Leitung', d.cable_length_m ? `${fmt.num(d.cable_length_m)} m${d.cable_cross_section ? ` · ${d.cable_cross_section} mm²` : ''}` : null), kv('Kaufdatum', d.purchase_date ? fmt.date(d.purchase_date) : null)), d.notes ? h('p', { class: 'muted', style: { marginTop: '10px', whiteSpace: 'pre-wrap' } }, d.notes) : null),
       h(
         'div',
         { class: 'card' },
