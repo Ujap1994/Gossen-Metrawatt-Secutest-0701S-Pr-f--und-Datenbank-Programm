@@ -117,11 +117,16 @@ const FUNCTION_ITEMS = [
 // ---------------------------------------------------------------------------
 // Fernsteuerung (PC-gesteuerter Modus) – Messnummern laut Bedienungsanleitung Kap. 8.5
 // ---------------------------------------------------------------------------
+/**
+ * map: Werte, die übernommen werden. Am echten Gerät (SECUTEST S) ist der übernommene Wert
+ * (z. B. IB = Nr. 30) das Maximum inkl. Gebrauchsfehler – derselbe Wert steht im Geräteprotokoll (PRO?).
+ * live: der aktuelle Anzeigewert im Display (nur zur Anzeige, wird nicht übernommen).
+ */
 const REMOTE = {
   RSL: { start: ['MES!8'], second: ['MES!10'], read: [12, 13, 14, 15], map: { RSL: 15, RSL_MIN: 12, RSL_MAX: 13, RSL_DIFF: 14 }, final: 'RSL' },
-  RISO: { start: ['MES!16'], read: [19, 20, 21, 96], map: { RISO: 21, RISO_MIN: 19, RISO_MAX: 20, UISO: 96 }, final: 'RISO' },
-  IEA: { start: ['MES!26'], read: [28, 29, 30], map: { IEA: 30, IEA_MIN: 28, IEA_MAX: 29 }, final: 'IEA' },
-  IB: { start: ['MES!24'], read: [28, 29, 30], map: { IB: 30, IB_MIN: 28, IB_MAX: 29 }, final: 'IB' },
+  RISO: { start: ['MES!16'], read: [19, 20, 21, 96], map: { RISO: 21, RISO_MIN: 19, RISO_MAX: 20, UISO: 96 }, live: { RISO_LIVE: 18 }, final: 'RISO' },
+  IEA: { start: ['MES!26'], read: [28, 29, 30], map: { IEA: 30, IEA_MIN: 28, IEA_MAX: 29 }, live: { IEA_LIVE: 26 }, final: 'IEA' },
+  IB: { start: ['MES!24'], read: [28, 29, 30], map: { IB: 30, IB_MIN: 28, IB_MAX: 29 }, live: { IB_LIVE: 24 }, final: 'IB' },
   ISONDE: { start: ['MES!32'], read: [32, 33, 34, 36], map: { ISONDE: 34, ISONDE_AC: 32, ISONDE_DC: 33, ISONDE_MAX: 36 }, final: 'ISONDE' },
   UV: { start: ['MES!72'], read: [72, 73, 74], map: { UV_AC: 72, UV_DC: 73, UV_TRMS: 74 }, final: 'UV_AC' },
   FT: {

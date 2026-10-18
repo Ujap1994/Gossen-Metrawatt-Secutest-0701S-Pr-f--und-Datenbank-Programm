@@ -1,4 +1,7 @@
 'use strict';
+// serialport öffnet Schnittstellen im libuv-Threadpool (Standard 4 Threads). Hängt das Öffnen eines Ports,
+// bleibt ein Thread belegt – mit mehr Threads blockiert das nicht gleich Dateizugriffe und Anmeldung.
+process.env.UV_THREADPOOL_SIZE = process.env.UV_THREADPOOL_SIZE || '16';
 /**
  * Secutest Prüfmanager – lokaler Webserver.
  *
@@ -7,6 +10,7 @@
  *
  * Optionen: --port 3701  --host 127.0.0.1  --simulator  --no-open
  */
+const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const config = require('./config');
@@ -32,6 +36,8 @@ function parseArgs(argv) {
 
 function createApp({ sessions = new SessionManager(), scheduler = new ReminderScheduler(), secutest = manager, onShutdown = null } = {}) {
   const app = express();
+  // Kennung dieses Serverstarts: ein Browser-Tab mit älterem Programmcode (vor Neustart/Update) wird erkannt
+  const bootId = require('crypto').randomBytes(6).toString('hex');
   app.disable('x-powered-by');
   app.set('etag', false);
 
@@ -66,6 +72,14 @@ function createApp({ sessions = new SessionManager(), scheduler = new ReminderSc
       return res.status(403).json({ error: `Zugriff über Host „${host}“ nicht erlaubt.` });
     }
     res.setHeader('Cache-Control', 'no-store');
+    // Veralteter Tab: Programm-Abfragen des Browsers (fetch/EventSource: Sec-Fetch-Mode cors bzw. same-origin; Node-fetch
+    // sendet kein Sec-Fetch-Site) ohne die Kennung dieses Starts abweisen – sonst steuert ein Tab mit altem Programmcode
+    // das Gerät weiter und holt sich den Ereignis-Kanal zurück. Links (Prüfprotokoll, Plaketten, Downloads) und Bilder bleiben frei.
+    const ui = req.get('X-UI-Boot') || req.query.boot;
+    const mode = req.get('Sec-Fetch-Mode');
+    if (req.get('Sec-Fetch-Site') && (mode === 'cors' || mode === 'same-origin') && req.path !== '/status' && ui !== bootId) {
+      return res.status(409).json({ error: 'Der Prüfmanager wurde neu gestartet oder aktualisiert – bitte diese Seite neu laden.', code: 'RELOAD' });
+    }
     next();
   });
 
@@ -74,6 +88,7 @@ function createApp({ sessions = new SessionManager(), scheduler = new ReminderSc
     const disc = config.load().disclaimer || {};
     res.json({
       version: pkg.version,
+      boot: bootId,
       platform: process.platform,
       disclaimerAccepted: Number(disc.version) >= DISCLAIMER_VERSION,
       authed,
@@ -110,7 +125,7 @@ function createApp({ sessions = new SessionManager(), scheduler = new ReminderSc
   app.use((err, req, res, next) => {
     let status = err.status || 500;
     if (!err.status && err.code) {
-      status = { WRONG_PASSWORD: 401, PASSWORD_REQUIRED: 401, COPY_FAILED: 500, WEAK_PASSWORD: 400, EXISTS: 409, NOT_FOUND: 404, LOCKED: 423, BAD_INPUT: 400, NAK: 409, TIMEOUT: 504, NOT_CONNECTED: 409, OPEN_FAILED: 409, NO_PORT: 400, NO_SERIAL: 500, BAD_POSITION: 400, NO_SIMULATOR: 400, NEWER_SCHEMA: 409, SQLITE_CONSTRAINT_UNIQUE: 409 }[err.code] || 500;
+      status = { WRONG_PASSWORD: 401, PASSWORD_REQUIRED: 401, COPY_FAILED: 500, WEAK_PASSWORD: 400, EXISTS: 409, NOT_FOUND: 404, LOCKED: 423, BAD_INPUT: 400, NAK: 409, TIMEOUT: 504, NOT_CONNECTED: 409, OPEN_FAILED: 409, NO_PORT: 400, NO_SERIAL: 500, BAD_POSITION: 400, NO_SIMULATOR: 400, CHECKSUM: 502, GARBLED: 502, DEVICE_ERROR: 409, UNSTABLE: 504, NEWER_SCHEMA: 409, SQLITE_CONSTRAINT_UNIQUE: 409 }[err.code] || 500;
     }
     if (err.type === 'entity.too.large') status = 413;
     if (status >= 500 && !(err instanceof AuthError)) console.error(err);
@@ -130,6 +145,128 @@ function openBrowser(url) {
   } catch {
     /* kein Browser verfügbar */
   }
+}
+
+// ---------------------------------------------------------------------------
+// Einzelinstanz: PID-Datei, damit ein Neustart eine hängende alte Instanz beenden kann
+// ---------------------------------------------------------------------------
+const pidFile = () => path.join(config.appDataDir(), 'server.pid');
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function writePidFile(port) {
+  try {
+    fs.mkdirSync(config.appDataDir(), { recursive: true });
+    fs.writeFileSync(pidFile(), JSON.stringify({ pid: process.pid, port, startedAt: new Date().toISOString() }));
+  } catch {
+    /* nur Komfort */
+  }
+}
+
+function removePidFile() {
+  try {
+    if (JSON.parse(fs.readFileSync(pidFile(), 'utf8')).pid === process.pid) fs.unlinkSync(pidFile());
+  } catch {
+    /* schon weg */
+  }
+}
+
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === 'EPERM';
+  }
+}
+
+/** Läuft unter der PID wirklich der Prüfmanager? (PIDs werden wiederverwendet) */
+function isOurProcess(pid) {
+  if (!alive(pid)) return false;
+  const { execFileSync } = require('child_process');
+  try {
+    if (process.platform === 'win32') return /node/i.test(execFileSync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], { encoding: 'utf8' }));
+    return /src[\\/]server\.js/.test(execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' }));
+  } catch {
+    return false;
+  }
+}
+
+/** Antwortet die laufende Instanz (Status und Oberfläche)? Mehrere Versuche – sie kann kurz beschäftigt sein. */
+async function runningInstance(url) {
+  for (let i = 0; i < 3; i++) {
+    const status = await fetch(`${url}/api/status`, { signal: AbortSignal.timeout(2000) })
+      .then((r) => r.json())
+      .catch(() => null);
+    const page = status?.version && (await fetch(url, { signal: AbortSignal.timeout(2000) }).then((r) => r.ok, () => false));
+    if (page) return status;
+    await sleep(500);
+  }
+  return null;
+}
+
+/** Hängende Instanz aus der PID-Datei beenden (erst freundlich, dann hart). true = Port ist frei */
+async function stopStaleInstance(port) {
+  let info;
+  try {
+    info = JSON.parse(fs.readFileSync(pidFile(), 'utf8'));
+  } catch {
+    return false;
+  }
+  if (!info?.pid || info.pid === process.pid || Number(info.port) !== Number(port) || !isOurProcess(info.pid)) return false;
+  console.log(`Vorherige Instanz (PID ${info.pid}) reagiert nicht – wird beendet …`);
+  for (const sig of ['SIGTERM', 'SIGKILL']) {
+    try {
+      process.kill(info.pid, sig);
+    } catch {
+      /* schon beendet */
+    }
+    for (let i = 0; i < 30 && alive(info.pid); i++) await sleep(100);
+    if (!alive(info.pid)) return true;
+  }
+  return false;
+}
+
+/** SECUTEST verbinden: Simulator oder automatische Suche samt Hot-Plug-Überwachung */
+function connectDevice(secutest, { simulator = false } = {}) {
+  if (simulator) {
+    secutest.connect({ simulator: true }).catch((e) => console.error('Simulator:', e.message));
+  } else if (secutest.cfg().autoConnect) {
+    secutest.startWatcher();
+    secutest.autoDetect({ connect: true }).then(
+      (r) => r.found && console.log(`  SECUTEST automatisch gefunden an ${r.found.path}`),
+      () => {}
+    );
+  }
+}
+
+/**
+ * Für das Desktop-Programm (Electron): Server nur für das eigene Fenster auf 127.0.0.1, ohne PID-Datei und
+ * ohne Browser. Fester Port, damit Einstellungen der Oberfläche (localStorage, z. B. Hell/Dunkel) erhalten
+ * bleiben; ist er belegt, ein freier. onQuit: „Programm beenden“ in der Oberfläche.
+ */
+async function startEmbedded({ simulator = false, port = 37017, onQuit = () => {} } = {}) {
+  const { app, sessions, secutest } = createApp({ onShutdown: (reason) => onQuit(reason) });
+  secutest.logToConsole = true;
+  const listenOn = (p) =>
+    new Promise((resolve, reject) => {
+      const s = app.listen(p, '127.0.0.1', () => resolve(s));
+      s.once('error', reject);
+    });
+  const server = await listenOn(port).catch((e) => (e.code === 'EADDRINUSE' ? listenOn(0) : Promise.reject(e)));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  console.log(`  Secutest Prüfmanager ${pkg.version} (Desktop) – ${url}, Konfiguration: ${config.appDataDir()}`);
+  connectDevice(secutest, { simulator });
+  let stopped = null;
+  const stop = (reason = 'Programm beendet') =>
+    (stopped ||= (async () => {
+      console.log(`${reason} …`);
+      sessions.closeAll(reason);
+      await secutest.disconnect().catch(() => {});
+      secutest.stopWatcher();
+      server.closeAllConnections?.(); // Ereignis-Kanäle (SSE) halten die Verbindung sonst offen
+      await new Promise((r) => server.close(() => r()));
+    })());
+  return { url, stop, secutest };
 }
 
 /** Prüft, ob Laufzeit und native Module funktionieren (für Release-Pakete) */
@@ -180,48 +317,52 @@ async function main() {
     sessions.closeAll(reason);
     await secutest.disconnect().catch(() => {});
     secutest.stopWatcher();
+    removePidFile();
     if (server) server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 1500).unref();
   };
   const { app, sessions, secutest } = createApp({ onShutdown: shutdown });
+  secutest.logToConsole = true;
 
-  server = app.listen(port, host, () => {
-    console.log(`\n  Secutest Prüfmanager ${pkg.version}`);
-    console.log(`  ➜ Oberfläche: ${url}`);
-    console.log(`  ➜ Konfiguration: ${config.appDataDir()}`);
-    if (args.simulator) console.log('  ➜ SECUTEST-Simulator aktiv (keine Hardware nötig)');
-    console.log('  Beenden mit Strg+C oder über „Programm beenden“ in der Oberfläche\n');
-    if (args.open && !process.env.CI) openBrowser(url);
-    // Schnittstelle erst nach erfolgreichem Start (sonst belegt eine zweite Instanz die Ports)
-    if (args.simulator) {
-      secutest.connect({ simulator: true }).catch((e) => console.error('Simulator:', e.message));
-    } else if (secutest.cfg().autoConnect) {
-      secutest.startWatcher();
-      secutest.autoDetect({ connect: true }).then(
-        (r) => r.found && console.log(`  SECUTEST automatisch gefunden an ${r.found.path}`),
-        () => {}
-      );
-    }
-  });
-  server.on('error', async (e) => {
-    if (e.code === 'EADDRINUSE') {
-      // Läuft das Programm schon? Dann nur den Browser öffnen (Einzelinstanz)
-      const running = await fetch(`${url}/api/status`, { signal: AbortSignal.timeout(2000) })
-        .then((r) => r.json())
-        .catch(() => null);
-      if (running?.version) {
-        console.log(`Secutest Prüfmanager läuft bereits – öffne ${url}`);
-        if (args.open && !process.env.CI) openBrowser(url);
-        process.exit(0);
-      }
-      console.error(`Port ${port} ist bereits durch ein anderes Programm belegt. Start mit --port <Nummer> möglich.`);
-    } else console.error(e.message);
-    process.exit(1);
-  });
+  let staleStopped = false;
+  const listen = () => {
+    server = app.listen(port, host, () => {
+      writePidFile(port);
+      console.log(`\n  Secutest Prüfmanager ${pkg.version}`);
+      console.log(`  ➜ Oberfläche: ${url}`);
+      console.log(`  ➜ Konfiguration: ${config.appDataDir()}`);
+      if (args.simulator) console.log('  ➜ SECUTEST-Simulator aktiv (keine Hardware nötig)');
+      console.log('  Beenden mit Strg+C oder über „Programm beenden“ in der Oberfläche\n');
+      if (args.open && !process.env.CI) openBrowser(url);
+      // Schnittstelle erst nach erfolgreichem Start (sonst belegt eine zweite Instanz die Ports)
+      connectDevice(secutest, { simulator: args.simulator });
+    });
+    server.on('error', async (e) => {
+      if (e.code === 'EADDRINUSE') {
+        // Läuft das Programm schon? Dann nur den Browser öffnen (Einzelinstanz)
+        const running = await runningInstance(url);
+        if (running) {
+          console.log(`Secutest Prüfmanager läuft bereits – öffne ${url}`);
+          if (args.open && !process.env.CI) openBrowser(url);
+          process.exit(0);
+        }
+        // eigene alte Instanz, die nicht mehr antwortet: beenden und neu starten
+        if (!staleStopped && (await stopStaleInstance(port))) {
+          staleStopped = true;
+          await sleep(300);
+          return listen();
+        }
+        console.error(`Port ${port} ist bereits durch ein anderes Programm belegt. Start mit --port <Nummer> möglich.`);
+      } else console.error(e.message);
+      process.exit(1);
+    });
+  };
+  listen();
+  process.on('exit', removePidFile);
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 }
 
 if (require.main === module) main();
 
-module.exports = { createApp, parseArgs };
+module.exports = { createApp, parseArgs, startEmbedded };

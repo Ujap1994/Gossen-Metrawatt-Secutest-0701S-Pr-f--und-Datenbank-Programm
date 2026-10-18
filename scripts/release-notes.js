@@ -25,28 +25,29 @@ const repo = process.env.GITHUB_REPOSITORY || '';
 const sha = process.env.GITHUB_SHA || 'main';
 
 const find = (re) => files.find((f) => re.test(f));
+// [System, Dateimuster, Installation, Pflicht (Standard: ja)] – Dateinamen von electron-builder (package.json → build)
 const PACKAGES = [
-  ['Windows 10/11 (x64)', /-windows-x64\.zip$/, 'Entpacken → `Secutest-Pruefmanager.cmd` doppelklicken'],
-  ['Windows 11 ARM64 (Snapdragon / Surface)', /-windows-arm64\.zip$/, 'Entpacken → `Secutest-Pruefmanager.cmd` doppelklicken'],
-  ['macOS Universal (Apple Silicon + Intel)', /-macos-universal\.zip$/, 'Entpacken → `Secutest Pruefmanager.app` (Rechtsklick → Öffnen)'],
-  ['macOS Apple Silicon (M1–M4)', /-macos-arm64\.zip$/, 'Entpacken → `Secutest Pruefmanager.app` (kleinerer Download)'],
-  ['macOS Intel', /-macos-x64\.zip$/, 'Entpacken → `Secutest Pruefmanager.app` (kleinerer Download)'],
-  ['Ubuntu / Linux Mint / Debian / Pop!_OS (x64)', /_amd64\.deb$/, '`sudo apt install ./<datei>.deb`'],
-  ['Raspberry Pi OS / Ubuntu ARM64', /_arm64\.deb$/, '`sudo apt install ./<datei>.deb`'],
-  ['Fedora / openSUSE / RHEL (x64)', /\.x86_64\.rpm$/, '`sudo dnf install ./<datei>.rpm`'],
-  ['Fedora / openSUSE ARM64', /\.aarch64\.rpm$/, '`sudo dnf install ./<datei>.rpm`'],
-  ['Arch / Manjaro / EndeavourOS (x64)', /-x86_64\.pkg\.tar\.zst$/, '`sudo pacman -U <datei>`'],
-  ['Arch Linux ARM (aarch64)', /-aarch64\.pkg\.tar\.zst$/, '`sudo pacman -U <datei>`'],
-  ['Alpine Linux / postmarketOS (x64)', /_x86_64\.apk$/, '`sudo apk add --allow-untrusted <datei>.apk` (nutzt `nodejs` der Distribution)'],
-  ['Alpine Linux / postmarketOS (ARM64)', /_aarch64\.apk$/, '`sudo apk add --allow-untrusted <datei>.apk`'],
-  ['Snap (Ubuntu & alle Distributionen mit snapd, x64)', /\.snap$/, '`sudo snap install --dangerous --classic <datei>.snap`', false],
+  ['Windows 10/11 – Installer (x64)', /-win-x64-setup\.exe$/, 'Doppelklick, Installation ohne Administratorrechte'],
+  ['Windows 11 ARM64 – Installer (Snapdragon / Surface)', /-win-arm64-setup\.exe$/, 'Doppelklick, Installation ohne Administratorrechte'],
+  ['Windows – Installer für x64 und ARM64 (wählt selbst)', /-win-setup\.exe$/, 'Doppelklick (größerer Download)', false],
+  ['Windows portabel (x64)', /-win-x64-portable\.exe$/, 'Ohne Installation starten, z. B. vom USB-Stick'],
+  ['Windows portabel (ARM64)', /-win-arm64-portable\.exe$/, 'Ohne Installation starten'],
+  ['macOS Universal (Apple Silicon + Intel)', /-mac-universal\.dmg$/, 'Öffnen → in „Programme“ ziehen (beim ersten Start Rechtsklick → Öffnen)'],
+  ['macOS Apple Silicon (M1–M4)', /-mac-arm64\.dmg$/, 'Öffnen → in „Programme“ ziehen (kleinerer Download)'],
+  ['macOS Intel', /-mac-x64\.dmg$/, 'Öffnen → in „Programme“ ziehen (kleinerer Download)'],
+  ['macOS als ZIP (Universal / Apple Silicon / Intel)', /-mac-universal\.zip$/, 'Entpacken → `Secutest Pruefmanager.app`', false],
+  ['Ubuntu / Linux Mint / Debian / Pop!_OS (x64)', /-linux-amd64\.deb$/, '`sudo apt install ./<datei>.deb`'],
+  ['Raspberry Pi OS / Ubuntu ARM64', /-linux-arm64\.deb$/, '`sudo apt install ./<datei>.deb`'],
+  ['Fedora / openSUSE / RHEL (x64)', /-linux-x86_64\.rpm$/, '`sudo dnf install ./<datei>.rpm`'],
+  ['Fedora / openSUSE ARM64', /-linux-aarch64\.rpm$/, '`sudo dnf install ./<datei>.rpm`'],
+  ['Arch / Manjaro / EndeavourOS (x64)', /-linux-(x64|x86_64)\.pacman$/, '`sudo pacman -U <datei>.pacman`'],
+  ['Arch Linux ARM (aarch64)', /-linux-(arm64|aarch64)\.pacman$/, '`sudo pacman -U <datei>.pacman`'],
+  ['Snap (alle Distributionen mit snapd, x64)', /\.snap$/, '`sudo snap install --dangerous <datei>.snap`', false],
   ['Flatpak (alle Distributionen, x64)', /\.flatpak$/, '`flatpak install --user <datei>.flatpak`', false],
-  ['AppImage (alle Distributionen, x64)', /-x86_64\.AppImage$/, '`chmod +x <datei>` und starten'],
-  ['AppImage (ARM64)', /-aarch64\.AppImage$/, '`chmod +x <datei>` und starten', false],
-  ['Linux portabel (x64)', /-linux-x64\.tar\.gz$/, '`tar xzf …` → `./Secutest-Pruefmanager.sh`'],
-  ['Linux portabel (ARM64)', /-linux-arm64\.tar\.gz$/, '`tar xzf …` → `./Secutest-Pruefmanager.sh`'],
-  ['Linux portabel, musl (x64, z. B. Void musl)', /-linux-musl-x64\.tar\.gz$/, 'Node.js ≥ 20 installieren → `./Secutest-Pruefmanager.sh`'],
-  ['Linux portabel, musl (ARM64)', /-linux-musl-arm64\.tar\.gz$/, 'Node.js ≥ 20 installieren → `./Secutest-Pruefmanager.sh`'],
+  ['AppImage (alle Distributionen, x64)', /-linux-x86_64\.AppImage$/, '`chmod +x <datei>` und starten'],
+  ['AppImage (ARM64)', /-linux-arm64\.AppImage$/, '`chmod +x <datei>` und starten'],
+  ['Linux portabel (x64)', /-linux-x64\.tar\.gz$/, '`tar xzf …` → `./secutest-pruefmanager`'],
+  ['Linux portabel (ARM64)', /-linux-arm64\.tar\.gz$/, '`tar xzf …` → `./secutest-pruefmanager`'],
 ];
 
 function latestChangelog() {
@@ -93,7 +94,7 @@ ${latestChangelog()}
 |---|---|---|
 ${rows.join('\n')}
 ${missing.length ? `\n_Diesmal nicht enthalten (Build-Schritt fehlgeschlagen): ${missing.map(([sys]) => sys).join(', ')}._\n` : ''}
-Node.js ist in allen Paketen enthalten – keine weitere Installation nötig (Ausnahme: Alpine/musl nutzen das Node.js der Distribution). Ohne Prüfgerät testen: „Simulator-ohne-Hardware“ starten bzw. \`secutest-pruefmanager --simulator\`.
+Desktop-Programm mit eigenem Fenster – keine weitere Installation nötig. Ohne Prüfgerät testen: \`secutest-pruefmanager --simulator\` (macOS: \`open -a "Secutest Pruefmanager" --args --simulator\`).
 Linux: Für den USB-RS232-Adapter den Benutzer in die Gruppe \`dialout\` (Arch: \`uucp\`) aufnehmen. Prüfsummen: \`SHA256SUMS.txt\`.
 `;
 

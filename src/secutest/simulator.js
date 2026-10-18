@@ -37,9 +37,10 @@ function fmtVal(v, digits, maxRange) {
 const SWITCH_NAMES = { 1: 'FUNCTION-TEST', 2: 'MENUE', 3: 'OFF', 4: 'AUTO', 5: 'SK I', 6: 'SK II', 7: 'SK III', 8: 'T 240' };
 
 class SimulatedSecutest extends EventEmitter {
-  constructor({ scenario = DEFAULT_SCENARIO, latencyMs = 25, stepMs = null } = {}) {
+  constructor({ scenario = DEFAULT_SCENARIO, latencyMs = 25, stepMs = null, refreshMs = 1000 } = {}) {
     super();
     this.latency = latencyMs;
+    this.refreshMs = refreshMs; // Anzeige-Aktualisierung (echtes Gerät: etwa 1 s)
     this.stepMs = stepMs; // nur für Tests: Dauer je Messschritt im gerätegeführten Ablauf
     this.buffer = '';
     this.echo = true;
@@ -47,6 +48,7 @@ class SimulatedSecutest extends EventEmitter {
     this.address = null;
     this.switchPos = 'AUTO';
     this.values = {};
+    this.held = {}; // Min/Max je Messung – wie am Gerät gehalten
     this.running = [];
     this.timers = [];
     this.sequence = null; // gerätegeführter Ablauf
@@ -84,13 +86,19 @@ class SimulatedSecutest extends EventEmitter {
 
   _send(body) {
     const msg = body + '$';
-    const line = msg + checksum(msg) + '\r\n';
+    // Rahmen wie beim echten Gerät: XOFF, Antwort, CR LF, Prompt ">", XON
+    const line = CTRL.XOFF + msg + checksum(msg) + '\r\n>' + CTRL.XON;
     const t = setTimeout(() => this.isOpen && this.emit('data', Buffer.from(line, 'latin1')), this.latency);
     this.timers.push(t);
   }
 
   _ack(ok = true) {
     this._send((ok ? 'Y' : 'N') + (this.address ?? ''));
+  }
+
+  /** wie am Gerät: nach dem Funktionstest stehen die Werte wieder auf „----.“ */
+  _clearFunctionTest() {
+    for (let n = 48; n <= 67; n++) delete this.values[n];
   }
 
   _clearTimers() {
@@ -123,6 +131,8 @@ class SimulatedSecutest extends EventEmitter {
   }
 
   _abort() {
+    this._ftDone = false;
+    this.held = {};
     this.running = [];
     this.sequence = null;
     this.mainsOn = false;
@@ -135,6 +145,8 @@ class SimulatedSecutest extends EventEmitter {
     const set = (k, val) => {
       v[k] = val;
     };
+    // Minimum/Maximum seit Messbeginn (das Gerät hält sie, der übernommene Wert hängt daran)
+    const hold = (key, x) => (this.held[key] = { lo: Math.min(this.held[key]?.lo ?? x, x), hi: Math.max(this.held[key]?.hi ?? x, x) });
     if (n >= 8 && n <= 15) {
       if (s.sk !== 'SK I') {
         set(12, null);
@@ -144,25 +156,32 @@ class SimulatedSecutest extends EventEmitter {
         return;
       }
       const a = jitter(s.RSL, 0.03);
-      const b = jitter(s.RSL, 0.05);
-      set(12, Math.min(a, b));
-      set(13, Math.max(a, b));
-      set(14, Math.abs(a - b));
-      set(15, Math.max(a, b) * 1.05 + 0.01);
+      hold('rsl', a);
+      const { lo, hi } = hold('rsl', jitter(s.RSL, 0.05));
+      set(12, lo);
+      set(13, hi);
+      set(14, hi - lo);
+      set(15, hi * 1.05 + 0.01);
     } else if ((n >= 16 && n <= 21) || (n >= 96 && n <= 98)) {
       const r = s.RISO >= 310 ? 311 : jitter(s.RISO, 0.02);
-      set(19, r);
-      set(20, r * 1.01);
-      set(21, r >= 310 ? 311 : r * 0.95);
+      set(16, r); // Anzeigewert (laufende Messnummer)
+      set(18, r);
+      const { lo, hi } = hold('riso', r);
+      set(19, lo);
+      set(20, hi);
+      set(21, lo >= 310 ? 311 : lo * 0.95);
       const u = jitter(537, 0.005);
       set(96, u);
       set(97, u - 1);
       set(98, u + 1);
     } else if (n >= 24 && n <= 30) {
       const i = jitter(s.IEA, 0.03);
-      set(28, i * 0.98);
-      set(29, i * 1.02);
-      set(30, i * 1.05 + 0.01);
+      set(24, i); // Anzeigewert (laufende Messnummer)
+      set(26, i);
+      const { lo, hi } = hold('iea', i);
+      set(28, lo);
+      set(29, hi);
+      set(30, hi * 1.05 + 0.01);
     } else if (n >= 32 && n <= 38) {
       const i = jitter(s.ISONDE, 0.1);
       set(32, i);
@@ -203,7 +222,7 @@ class SimulatedSecutest extends EventEmitter {
     const v = this.values[n];
     if (v === undefined || v === null) return '---.-';
     if (n >= 12 && n <= 15) return fmtVal(v, 3, 31);
-    if (n >= 19 && n <= 21) return v >= 310 ? '>310.0' : fmtVal(v, v < 1.5 ? 3 : v < 11 ? 2 : 1);
+    if ([16, 18, 19, 20, 21].includes(n)) return v >= 310 ? '>310.0' : fmtVal(v, v < 1.5 ? 3 : v < 11 ? 2 : 1);
     if (n >= 96 && n <= 98) return fmtVal(v, 0);
     if (n >= 28 && n <= 30) return fmtVal(v, 2);
     if (n >= 32 && n <= 38) return fmtVal(v, 3);
@@ -235,9 +254,13 @@ class SimulatedSecutest extends EventEmitter {
     }
     if (n === 64) {
       this.mainsOn = false;
+      this._clearFunctionTest();
       this.running = [];
       return true;
     }
+    // neue Messung: gehaltene Min/Max zurücksetzen – beim Polungswechsel von R_SL (MES!8 → MES!10) nicht
+    const grp = n >= 8 && n <= 15 ? 'rsl' : (n >= 16 && n <= 21) || (n >= 96 && n <= 98) ? 'riso' : n >= 24 && n <= 30 ? 'iea' : String(n);
+    if (grp !== this.heldGroup) (this.held = {}), (this.heldGroup = grp);
     const groupStart = { 8: [8, 12, 13, 14, 15], 9: [9], 10: [10, 12, 13, 14, 15], 11: [11], 16: [16, 96], 17: [17, 96], 18: [18, 96], 24: [24], 25: [25], 26: [26], 27: [27], 32: [32], 72: [72], 73: [73], 80: [80], 82: [82] };
     this.running = groupStart[n] ? [n] : [n];
     this._gen(n);
@@ -262,38 +285,73 @@ class SimulatedSecutest extends EventEmitter {
     }
   }
 
+  /**
+   * Taste ↵ im gerätegeführten Ablauf – wie am echten SECUTEST S: Start → Messschritt läuft, bis ↵ gedrückt
+   * wird → nächster Schritt … → Meldung „Prüfling ausschalten“ (↵) → Funktionstest (Taste 14 = TAS!5) →
+   * Frage „Funktionstest bestanden?“ (↵ = ja) → „Protokoll fertig“ (PRF).
+   * Mit stepMs (nur Tests) laufen die Messschritte wie früher selbst weiter, ohne Funktionstest.
+   */
   _enterPressed() {
     if (this.remote) return;
-    if (this.sequence && this.sequence.done) {
+    const seq = this.sequence;
+    if (seq && seq.done) {
       this.sequence = null; // „neue Prüfung“
       return;
     }
-    if (this.sequence) return;
-    const steps = this._sequenceSteps();
-    if (!steps.length) return;
-    this.values = {};
-    this.sequence = { steps, idx: 0, done: false };
-    this._runSequenceStep();
+    if (!seq) {
+      const steps = this._sequenceSteps();
+      if (!steps.length) return;
+      this.values = {};
+      this._ftDone = false;
+      this.sequence = { steps, idx: 0, done: false, phase: 'measure' };
+      this._runSequenceStep();
+      return;
+    }
+    if (this.stepMs != null) return;
+    if (seq.phase === 'measure') {
+      seq.idx += 1;
+      this._runSequenceStep();
+    } else if (seq.phase === 'switch-off') this._startFunctionTestPhase();
+    else if (seq.phase === 'question') this._finishSequence();
   }
 
   _runSequenceStep() {
     const seq = this.sequence;
     if (!seq) return;
     if (seq.idx >= seq.steps.length) {
-      seq.done = true;
-      this.running = [];
-      this.lastProtocol = this._buildProtocol();
+      if (this.stepMs != null) return this._finishSequence();
+      // Meldung „Prüfling ausschalten“ – nach ↵ (oder nach einigen Sekunden) Funktionstest
+      seq.phase = 'switch-off';
+      this.running = [115];
+      this.timers.push(setTimeout(() => this.sequence === seq && seq.phase === 'switch-off' && this._startFunctionTestPhase(), 5000));
       return;
     }
     const st = seq.steps[seq.idx];
     this.running = [st.m];
+    this.held = {};
+    this.heldGroup = null;
     this._gen(st.m);
-    const dur = this.stepMs ?? (st.m === 8 ? 4000 : 2500);
+    if (this.stepMs == null) return; // wartet auf ↵
     const t = setTimeout(() => {
       seq.idx += 1;
       this._runSequenceStep();
-    }, dur);
+    }, this.stepMs);
     this.timers.push(t);
+  }
+
+  _startFunctionTestPhase() {
+    this.sequence.phase = 'ft';
+    this.running = [64, 48, 56];
+  }
+
+  _finishSequence() {
+    const seq = this.sequence;
+    seq.done = true;
+    seq.phase = 'done';
+    this.running = [];
+    this.lastProtocol = this._buildProtocol();
+    this._clearFunctionTest();
+    this._send(`PRF${this.address ?? ''}`); // wie das echte Gerät: „Protokoll fertig“
   }
 
   _buildProtocol() {
@@ -330,6 +388,11 @@ class SimulatedSecutest extends EventEmitter {
     if (v[72] != null) {
       BB |= 16;
       vals.push(v[72].toFixed(1), '<50.0', (v[73] || 0).toFixed(1), '<120.0');
+    }
+    if (this._ftDone && v[67] != null) {
+      BB |= 32; // Differenzstrom aus dem Funktionstest
+      vals.push(v[67].toFixed(2).padStart(5, '0'), '<03.50');
+      if (v[67] > 3.5) EE |= 32;
     }
     if (s.sk === 'SK I') CC |= 1;
     if (s.sk === 'SK III') CC |= 2;
@@ -391,7 +454,11 @@ class SimulatedSecutest extends EventEmitter {
       return;
     }
     if (op === 'WER' && operator === '?') {
-      for (const n of this.running) this._gen(n >= 48 && n <= 67 ? 'FT' : n);
+      // wie das echte Gerät: Anzeigewerte ändern sich höchstens etwa einmal pro Sekunde, nicht bei jeder Abfrage
+      if (!this._lastGen || Date.now() - this._lastGen >= this.refreshMs) {
+        this._lastGen = Date.now();
+        for (const n of this.running) this._gen(n >= 48 && n <= 67 ? 'FT' : n);
+      }
       const nums = params
         ? params
             .split(/[,;]/)
@@ -407,12 +474,19 @@ class SimulatedSecutest extends EventEmitter {
       else if (t === 'r') this.remote = false;
       else if (t === '4') this._enterPressed();
       else if (t === '5') {
+        const seq = this.sequence;
+        const inSequence = seq && (seq.phase === 'ft' || seq.phase === 'question');
         this.mainsOn = !this.mainsOn;
-        this.running = this.mainsOn ? [56, 64] : [];
+        this.running = inSequence ? [64, 48, 56] : this.mainsOn ? [56, 64] : [];
         if (this.mainsOn) {
           this._energy = 0;
           this._gen('FT');
-        }
+          if (inSequence) seq.phase = 'ft';
+        } else if (inSequence) {
+          // wie am Gerät: Werte bleiben stehen, bis die Frage „bestanden?“ beantwortet ist
+          seq.phase = 'question';
+          this._ftDone = true;
+        } else this._clearFunctionTest();
       } else if (!/^[0-3Mm]$/.test(t)) {
         this._ack(false);
         return;

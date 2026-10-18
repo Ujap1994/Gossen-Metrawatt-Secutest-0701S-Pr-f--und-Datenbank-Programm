@@ -7,12 +7,13 @@
  * auf Antwort warten. Antwortet ein Gerät mit IDN…= / GMN / SecuTest, ist es gefunden.
  *
  * Zusätzlich: Hot-Plug-Überwachung – wird ein neuer USB-Seriell-Adapter eingesteckt,
- * wird er automatisch angepingt (und optional verbunden).
+ * wird er automatisch angepingt (und optional verbunden). Solange keine Verbindung besteht,
+ * werden die vorhandenen Adapter außerdem regelmäßig erneut angepingt (SECUTEST erst später eingeschaltet).
  */
 const fs = require('fs');
 const path = require('path');
 const { EventEmitter } = require('events');
-const { buildCommand, parseLine, parseIdn, CTRL } = require('./protocol');
+const { buildCommand, cleanLine, parseLine, parseIdn, CTRL } = require('./protocol');
 
 // Bekannte USB-Seriell-Chips (Vendor-IDs) → werden zuerst geprüft
 const USB_SERIAL_VENDORS = {
@@ -24,6 +25,8 @@ const USB_SERIAL_VENDORS = {
   '0557': 'ATEN',
   '2341': 'Arduino (kein SECUTEST)',
 };
+
+const DARWIN_USB_PATH = /^\/dev\/cu\.(usbserial|usbmodem|wchusbserial|SLAB_USBtoUART|PL2303)/i;
 
 function loadSerialPort() {
   try {
@@ -67,9 +70,9 @@ async function listCandidates() {
     }
   } else error = 'Modul „serialport“ nicht verfügbar';
   if (!ports.length) ports = devFallback();
-  // macOS: /dev/tty.* blockiert ohne DCD → /dev/cu.* bevorzugen
+  // macOS: /dev/tty.* blockiert ohne DCD → /dev/cu.* bevorzugen; nur USB-Adapter (keine Bluetooth-Geräte wie Kopfhörer)
   if (process.platform === 'darwin') {
-    ports = ports.map((p) => ({ ...p, path: p.path.replace(/^\/dev\/tty\./, '/dev/cu.') }));
+    ports = ports.map((p) => ({ ...p, path: p.path.replace(/^\/dev\/tty\./, '/dev/cu.') })).filter((p) => p.vendorId || DARWIN_USB_PATH.test(p.path));
   }
   const seen = new Set();
   ports = ports.filter((p) => (seen.has(p.path) ? false : seen.add(p.path)));
@@ -102,8 +105,7 @@ async function listCandidates() {
  * Einzelnen Port anpingen. Liefert {ok, identity?, response?, error?}
  * Hinweis: Ein Port, der bereits vom Programm benutzt wird, kann nicht gepingt werden.
  */
-function pingPort(portPath, { timeoutMs = 1500, attempts = 2 } = {}) {
-  const SP = loadSerialPort();
+function pingPort(portPath, { timeoutMs = 1500, attempts = 3, SerialPort: SP = loadSerialPort() } = {}) {
   if (!SP) return Promise.resolve({ path: portPath, ok: false, error: 'serialport nicht verfügbar' });
   return new Promise((resolve) => {
     let done = false;
@@ -111,10 +113,13 @@ function pingPort(portPath, { timeoutMs = 1500, attempts = 2 } = {}) {
     let tries = 0;
     let timer = null;
     const port = new SP({ path: portPath, baudRate: 9600, dataBits: 8, parity: 'none', stopBits: 1, xon: true, xoff: true, autoOpen: false });
+    // Sicherung: auch wenn schon das Öffnen hängt, kommt immer ein Ergebnis
+    const watchdog = setTimeout(() => finish({ ok: false, error: 'Schnittstelle reagiert nicht (Zeitüberschreitung)' }), 2000 + timeoutMs * attempts);
     const finish = (res) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
+      clearTimeout(watchdog);
       try {
         if (port.isOpen) port.close(() => resolve({ path: portPath, ...res }));
         else resolve({ path: portPath, ...res });
@@ -131,17 +136,29 @@ function pingPort(portPath, { timeoutMs = 1500, attempts = 2 } = {}) {
       }
       timer = setTimeout(() => (tries < attempts ? sendPing() : finish({ ok: false, error: buffer ? `Unerwartete Antwort: ${buffer.slice(0, 80)}` : 'keine Antwort' })), timeoutMs);
     };
+    let busySeen = 0;
     port.on('data', (b) => {
       buffer += b.toString('latin1');
-      for (const line of buffer.split(/[\r\n]+/)) {
+      // nur vollständige Zeilen – sonst reicht schon ein halb empfangenes „IDNx=x;GMN;S“
+      const parts = buffer.split(/[\r\n]+/);
+      const lines = (/[\r\n]$/.test(buffer) ? parts : parts.slice(0, -1)).map(cleanLine);
+      for (const line of lines) {
         const p = parseLine(line);
-        if (p.type === 'answer' && (p.operation === 'IDN' || /GMN|secutest/i.test(p.params))) {
+        if (p.type === 'answer' && p.checksumOk !== false && (p.operation === 'IDN' || /GMN|secutest/i.test(p.params))) {
           return finish({ ok: true, identity: parseIdn(p.params), response: p.raw });
         }
+      }
+      // „.Ex“: Gerät gerade beschäftigt (z. B. im AUTO-Menü) – gleich nochmal fragen statt den Timeout abzuwarten
+      const busy = lines.filter((l) => parseLine(l).type === 'error').length;
+      if (busy > busySeen && tries < attempts) {
+        busySeen = busy;
+        clearTimeout(timer);
+        timer = setTimeout(sendPing, 300);
       }
     });
     port.on('error', (e) => finish({ ok: false, error: e.message }));
     port.open((err) => {
+      if (done) return !err && port.close(() => {}); // zu spät geöffnet – wieder freigeben
       if (err) return finish({ ok: false, error: /busy|access|denied|EBUSY|EACCES/i.test(err.message) ? `Port belegt oder keine Berechtigung (${err.message})` : err.message });
       setTimeout(sendPing, 150);
     });
@@ -172,13 +189,23 @@ async function scan({ stopOnFirst = true, exclude = [], onProgress } = {}) {
  * und pingt diese an. Ereignisse: 'added' {port}, 'removed' {path}, 'found' {result}
  */
 class PortWatcher extends EventEmitter {
-  constructor({ intervalMs = 3000 } = {}) {
+  /**
+   * shouldProbe(): true, solange keine Verbindung besteht – dann werden vorhandene USB-Adapter
+   * alle `probeEveryMs` erneut angepingt (z. B. SECUTEST erst nach dem Programmstart eingeschaltet).
+   */
+  constructor({ intervalMs = 3000, probeEveryMs = 10000, shouldProbe = () => false, list = listCandidates, ping = pingPort, listTimeoutMs = 10000 } = {}) {
     super();
     this.intervalMs = intervalMs;
+    this.probeEveryMs = probeEveryMs;
+    this.shouldProbe = shouldProbe;
+    this.list = list;
+    this.ping = ping;
+    this.listTimeoutMs = listTimeoutMs;
     this.known = null;
     this.timer = null;
     this.busy = false;
     this.paused = false;
+    this.lastProbe = 0;
   }
 
   start() {
@@ -197,17 +224,30 @@ class PortWatcher extends EventEmitter {
     if (this.busy || this.paused) return;
     this.busy = true;
     try {
-      const { candidates } = await listCandidates();
+      const { candidates } = await withTimeout(this.list(), this.listTimeoutMs, { candidates: [] });
       const paths = new Set(candidates.map((c) => c.path));
       if (this.known) {
+        for (const p of this.known) if (!paths.has(p)) this.emit('removed', { path: p });
         for (const c of candidates) {
           if (!this.known.has(c.path)) {
+            this.known.add(c.path);
             this.emit('added', c);
-            const r = await pingPort(c.path);
+            const r = await this.ping(c.path);
             if (r.ok) this.emit('found', { ...c, ...r });
           }
         }
-        for (const p of this.known) if (!paths.has(p)) this.emit('removed', { path: p });
+        // nicht verbunden: vorhandene USB-Seriell-Adapter regelmäßig erneut anpingen
+        if (Date.now() - this.lastProbe >= this.probeEveryMs && this.shouldProbe()) {
+          this.lastProbe = Date.now();
+          for (const c of candidates.filter((x) => x.score > 0)) {
+            if (this.paused || !this.shouldProbe()) break;
+            const r = await this.ping(c.path);
+            if (r.ok) {
+              this.emit('found', { ...c, ...r });
+              break;
+            }
+          }
+        }
       }
       this.known = paths;
     } catch {
@@ -216,6 +256,11 @@ class PortWatcher extends EventEmitter {
       this.busy = false;
     }
   }
+}
+
+function withTimeout(promise, ms, fallback) {
+  let t;
+  return Promise.race([promise, new Promise((r) => (t = setTimeout(() => r(fallback), ms)))]).finally(() => clearTimeout(t));
 }
 
 module.exports = { listCandidates, pingPort, scan, PortWatcher, USB_SERIAL_VENDORS };

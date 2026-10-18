@@ -1,7 +1,7 @@
 // Prüfassistent: Gerät wählen → Ablauf/Modus → Schritte mit Grafik → Bewertung → Speichern
 import { h, clear, fmt, toast, field, input, select, resultBadge, skSymbol, confirmDialog, debounce, add, fill } from '../ui.js';
 import { get, post, del } from '../api.js';
-import { state, procName, deviceTypeLabel } from '../state.js';
+import { state, procName, deviceTypeLabel, onSecutest } from '../state.js';
 import { renderScene, sceneLegend } from '../illustrations.js';
 import { calibrationText } from './settings.js';
 
@@ -18,14 +18,33 @@ export function wizardDirty() {
 }
 
 function stopTimers() {
-  for (const t of timers) clearInterval(t);
+  for (const t of timers) {
+    t.stopped = true;
+    clearTimeout(t.id);
+  }
   timers.clear();
 }
 
-function every(ms, fn) {
-  const t = setInterval(fn, ms);
+/** Einmal nach ms – endet mit stopTimers (Schrittwechsel, Neuzeichnen) */
+function later(ms, fn) {
+  const t = { stopped: false, id: null };
+  t.id = setTimeout(() => !t.stopped && fn(), ms);
   timers.add(t);
-  fn();
+  return t;
+}
+
+/** Wiederholt fn alle ms – die nächste Abfrage startet erst, wenn die vorige fertig ist (sonst stauen sie sich beim Gerät) */
+function every(ms, fn) {
+  const t = { stopped: false, id: null };
+  const run = async () => {
+    try {
+      await fn();
+    } finally {
+      if (!t.stopped) t.id = setTimeout(run, ms);
+    }
+  };
+  timers.add(t);
+  run();
   return t;
 }
 
@@ -33,8 +52,18 @@ window.addEventListener('hashchange', () => {
   if (!location.hash.startsWith('#/inspect')) stopTimers();
 });
 
+// gerätegeführt: Das SECUTEST meldet „Protokoll fertig“ (PRF) nach der Sicherheitsprüfung und nach dem Funktionstest
+let resultRedraw = null; // gesetzt, solange der Schritt „Bewertung“ angezeigt wird
+onSecutest((type) => {
+  if (type !== 'protocol-ready' || !W?.started || W.saved || W.cfg.mode !== 'secutest-geraet') return;
+  W.protocolReady = true;
+  W.protocolFetched = false;
+  if (resultRedraw) fetchFromSecutest(resultRedraw);
+  else toast('SECUTEST: Protokoll fertig – das Ergebnis wird im Schritt „Bewertung“ automatisch übernommen.', 'ok', 6000);
+});
+
 const MODE_INFO = {
-  'secutest-geraet': { icon: '📟', title: 'SECUTEST – gerätegeführt (empfohlen)', desc: 'Du bedienst das SECUTEST wie gewohnt (Bedienerführung im Display). Das Programm zeigt passend dazu die Grafiken und Live-Werte und übernimmt am Ende alle Messwerte per RS-232 (PRO?).' },
+  'secutest-geraet': { icon: '📟', title: 'SECUTEST – gerätegeführt (empfohlen)', desc: 'Das SECUTEST führt durch seinen eigenen Prüfablauf (z. B. SK II: R_ISO → Ableitstrom → Funktionstest). Mit Automatik drückt das Programm Start/↵, liest die Werte mit und schaltet weiter; den Funktionstest machst du am Gerät. Am Ende übernimmt es das Protokoll des SECUTEST (PRO?).' },
   'secutest-pc': { icon: '💻', title: 'SECUTEST – PC-gesteuert', desc: 'Das Programm startet jede Messung selbst per Schnittstellenbefehl (MES!/WER?) und liest die Werte. Ideal, um jeden Schritt einzeln zu steuern.' },
   manuell: { icon: '✍️', title: 'Manuell – ohne SECUTEST-Verbindung', desc: 'Messwerte vom Display (oder einem anderen Prüfgerät) von Hand eintragen. Bewertung erfolgt trotzdem automatisch.' },
 };
@@ -250,6 +279,7 @@ async function renderSetup(deviceId, navigate) {
         saved: null,
         remoteActive: false,
         prefilled: false,
+        auto: cfg.mode !== 'manuell', // Automatik: messen bzw. mitlesen, eintragen, weiterschalten
       };
       if (tpl) {
         W.inspector = tpl.inspector || W.inspector;
@@ -323,20 +353,25 @@ function stepStatus(step) {
 }
 
 function stepView(navigate, redraw) {
+  resultRedraw = null;
   const steps = W.proc.steps;
   const step = steps[W.stepIdx];
+  // außerhalb der Messschritte fasst der Prüfer das Gerät an: vor der nächsten Messung mit Prüfspannung neu bestätigen
+  if (step.type !== 'measure') W.handsOff = false;
   const progress = h(
     'div',
     { class: 'wizard-progress' },
-    steps.map((s, i) => h('button', { class: `${i === W.stepIdx ? 'cur' : ''} ${stepStatus(s)}`, onclick: () => ((W.stepIdx = i), redraw()) }, h('span', { class: 'n' }, `${i + 1}`), s.title.replace(/\s*\(.*\)$/, '')))
+    steps.map((s, i) => h('button', { class: `${i === W.stepIdx ? 'cur' : ''} ${stepStatus(s)}`, onclick: async () => (step.type !== 'function' || (await functionTestFinished())) && ((W.stepIdx = i), redraw()) }, h('span', { class: 'n' }, `${i + 1}`), s.title.replace(/\s*\(.*\)$/, '')))
   );
   const go = async (delta) => {
     if (delta > 0 && !(await canLeave(step))) return;
+    if (step.type === 'function' && !(await functionTestFinished())) return;
     W.stepIdx = Math.max(0, Math.min(steps.length - 1, W.stepIdx + delta));
     redraw();
   };
   const abort = async () => {
     if (!(await confirmDialog('Prüfung abbrechen? Alle eingegebenen Werte gehen verloren.', { danger: true, confirmLabel: 'Prüfung verwerfen' }))) return;
+    if (!(await functionTestFinished())) return;
     if (W.remoteActive) post('/secutest/remote/end').catch(() => {});
     const id = W.device.id;
     W = null;
@@ -345,15 +380,16 @@ function stepView(navigate, redraw) {
 
   const panel = h('div', { class: 'card stack' });
   add(panel, 
-    h('div', { class: 'row between' }, h('h2', { style: { margin: 0 } }, `${W.stepIdx + 1}. ${step.title}`), h('span', { class: 'badge info' }, MODE_INFO[W.cfg.mode].icon + ' ' + (W.cfg.mode === 'manuell' ? 'manuell' : W.cfg.mode === 'secutest-pc' ? 'PC-gesteuert' : 'gerätegeführt'))),
+    h('div', { class: 'row between' }, h('h2', { style: { margin: 0 } }, `${W.stepIdx + 1}. ${step.title}`), h('div', { class: 'row' }, W.cfg.mode !== 'manuell' ? h('button', { class: `btn sm ${W.auto ? 'ok' : ''}`, title: 'Automatik: Messungen starten bzw. mitlesen, Werte eintragen und weiterschalten', onclick: () => ((W.auto = !W.auto), redraw()) }, W.auto ? '⚙ Automatik an' : '⚙ Automatik aus') : null, h('span', { class: 'badge info' }, MODE_INFO[W.cfg.mode].icon + ' ' + (W.cfg.mode === 'manuell' ? 'manuell' : W.cfg.mode === 'secutest-pc' ? 'PC-gesteuert' : 'gerätegeführt')))),
     step.instructions?.length ? h('ol', { class: 'instr' }, step.instructions.map((t) => h('li', {}, t))) : null,
     (step.hints || []).map((t) => h('div', { class: 'hint' }, '💡 ', t))
   );
   const body = h('div');
   panel.appendChild(body);
-  if (step.type === 'prep') prepPanel(step, body, redraw);
+  const next = () => go(1);
+  if (step.type === 'prep') prepPanel(step, body, redraw, next);
   else if (step.type === 'visual' || step.type === 'checks') checksPanel(step, body, redraw, step.type === 'visual' ? 'sicht' : 'sonstiges');
-  else if (step.type === 'measure') measurePanel(step, body, redraw);
+  else if (step.type === 'measure') measurePanel(step, body, redraw, next);
   else if (step.type === 'function') functionPanel(step, body, redraw);
   else if (step.type === 'result') resultPanel(step, body, navigate, redraw);
 
@@ -394,7 +430,7 @@ async function canLeave(step) {
 // ---------------------------------------------------------------------------
 // Vorbereitung
 // ---------------------------------------------------------------------------
-function prepPanel(step, body, redraw) {
+function prepPanel(step, body, redraw, next) {
   const sw = W.proc.switchPos;
   if (W.cfg.mode === 'manuell') {
     body.appendChild(h('div', { class: 'alert info small' }, 'Manueller Modus: Messungen am SECUTEST (oder einem anderen Prüfgerät) durchführen und die Anzeigewerte in den folgenden Schritten eintragen.'));
@@ -419,31 +455,58 @@ function prepPanel(step, body, redraw) {
       h('button', {
         class: 'btn primary',
         onclick: async () => {
-          clear(out).appendChild(h('div', { class: 'muted' }, 'Prüfe Anschluss …'));
           try {
+            if (W.auto) {
+              clear(out).appendChild(h('div', { class: 'muted' }, `Stelle SECUTEST auf „${sw}“ …`));
+              await post('/secutest/switch', { position: sw });
+            }
+            clear(out).appendChild(h('div', { class: 'muted' }, 'Prüfe Anschluss …'));
             const r = await post('/secutest/precheck');
             W.remoteActive = true;
             const line = (ok, good, bad) => h('div', {}, ok ? '✅ ' : '❌ ', ok ? good : bad);
             const peExpected = W.device.protection_class === 'SK I';
+            const allOk = r.noShort && r.probe && r.switchedOn && r.protectiveConductor === peExpected;
+            if (allOk && W.auto) later(1500, next);
             fill(out, 
               h('div', { class: 'card' },
                 line(r.noShort, 'Kein Kurzschluss am Prüfling', 'KURZSCHLUSS am Prüfling – Prüfung nicht fortsetzen!'),
                 line(r.probe, 'Sonde angeschlossen', 'Sonde nicht angeschlossen (Buchsen 4/5)'),
                 line(r.switchedOn, 'Prüfling ist eingeschaltet', 'Prüfling scheint AUSGESCHALTET – Netzschalter einschalten!'),
                 line(r.protectiveConductor === peExpected, r.protectiveConductor ? 'Schutzleiter erkannt (SK I)' : 'Kein Schutzleiter erkannt (SK II)', r.protectiveConductor ? 'Schutzleiter erkannt – Gerät ist evtl. SK I statt SK II?' : 'KEIN Schutzleiter erkannt, obwohl SK I erfasst – Schutzleiter unterbrochen?'),
-                r.status?.flags?.list?.length ? h('div', { class: 'small muted', style: { marginTop: '6px' } }, 'Anschluss: ', r.status.flags.list.join(', ')) : null
+                r.status?.flags?.list?.length ? h('div', { class: 'small muted', style: { marginTop: '6px' } }, 'Anschluss: ', r.status.flags.list.join(', ')) : null,
+                W.auto ? h('div', { class: 'small', style: { marginTop: '6px' } }, allOk ? '⚙ Alles in Ordnung – weiter zur Sichtprüfung …' : '⚙ Automatik angehalten – Anschluss prüfen und erneut starten.') : null
               )
             );
           } catch (e) {
             clear(out).appendChild(h('div', { class: 'alert bad' }, e.message));
           }
         },
-      }, '🔍 Anschlusskontrolle durchführen')
+      }, W.auto ? '▶ Automatische Prüfung starten' : '🔍 Anschlusskontrolle durchführen')
     );
   } else {
+    if (W.auto) {
+      body.appendChild(
+        h('button', {
+          class: 'btn primary',
+          onclick: async () => {
+            try {
+              clear(out).appendChild(h('div', { class: 'muted' }, `Stelle SECUTEST auf „${sw}“ …`));
+              await post('/secutest/remote/end'); // falls von einer PC-gesteuerten Prüfung noch an
+              await post('/secutest/switch', { position: sw });
+              W.deviceRunning = false;
+              W.pendingEnter = false;
+              fill(out, h('div', { class: 'alert ok small' }, `⚙ SECUTEST steht auf „${sw}“ – weiter zur Sichtprüfung …`));
+              later(1500, next);
+            } catch (e) {
+              clear(out).appendChild(h('div', { class: 'alert bad' }, e.message));
+            }
+          },
+        }, '▶ Automatische Prüfung starten')
+      );
+    }
     const live = h('div');
     add(body, h('h3', {}, 'Live vom SECUTEST'), live, keypad);
-    every(1200, async () => {
+    every(2000, async () => {
       try {
         const r = await get('/secutest/live');
         fill(live, h('div', { class: 'small' }, r.flags.list.length ? '🔌 ' + r.flags.list.join(' · ') : 'Kein Prüfling erkannt'), r.flags.slDose && W.device.protection_class !== 'SK I' ? h('div', { class: 'alert warn small' }, 'Schutzleiter an der Prüfdose erkannt – ist das Gerät wirklich SK II?') : null);
@@ -505,7 +568,19 @@ function takeValues(step, values, pointIdx) {
   }
 }
 
-function measurePanel(step, body, redraw) {
+/** Zweimal gleich gelesene Werte übernehmen (vertauschte Zeichen erkennt die Prüfsumme des Geräts nicht) */
+function takeConfirmed(step, r) {
+  const vals = Object.fromEntries(Object.entries(r.values || {}).filter(([, v]) => v.value != null));
+  if (!Object.keys(vals).length) {
+    toast(r.unconfirmed?.length ? 'Messwert schwankt oder wurde verfälscht übertragen – bitte nochmal übernehmen.' : 'Keine Messwerte vorhanden.', 'warn', 6000);
+    return false;
+  }
+  takeValues(step, vals);
+  if (r.unconfirmed?.length) toast(`Nicht stabil gelesen und daher nicht übernommen: ${r.unconfirmed.join(', ')}`, 'warn', 6000);
+  return true;
+}
+
+function measurePanel(step, body, redraw, next) {
   const pts = ensurePoint(step);
   if (W.display[step.id] == null) W.display[step.id] = W.cfg.mode === 'manuell' && !!state.meta.settings.manualDisplayCorrection;
   const ptsBox = h('div');
@@ -580,7 +655,7 @@ function measurePanel(step, body, redraw) {
       },
     }, '▶ Messung starten');
     const poll = () =>
-      every(700, async () => {
+      every(1500, async () => {
         if (!running) return;
         try {
           const r = await get(`/secutest/remote/read?group=${group}`);
@@ -592,9 +667,23 @@ function measurePanel(step, body, redraw) {
       });
     add(ctrl, startBtn);
     if (step.key === 'RSL') add(ctrl, h('button', { class: 'btn', onclick: () => post('/secutest/remote/start', { group, second: true }).then(() => toast('Polarität gewechselt (−)', 'ok')).catch((e) => toast(e.message, 'bad')) }, '⇄ Polung wechseln'));
-    add(ctrl, h('button', { class: 'btn ok', onclick: () => (Object.keys(lastLive).length ? (takeValues(step, lastLive), (running = false), stopTimers(), statusLine.textContent = '✓ Wert übernommen', drawPoints()) : toast('Noch keine Messwerte – Messung starten.', 'warn')) }, '✓ Wert übernehmen'));
+    add(ctrl, h('button', { class: 'btn ok', onclick: async () => {
+      if (!Object.keys(lastLive).length) return toast('Noch keine Messwerte – Messung starten.', 'warn');
+      try {
+        const r = await get(`/secutest/remote/read?group=${group}&confirm=1`);
+        if (!takeConfirmed(step, r)) return;
+        running = false;
+        stopTimers();
+        statusLine.textContent = '✓ Wert übernommen';
+        drawPoints();
+      } catch (e) {
+        toast(e.message, 'bad');
+      }
+    } }, '✓ Wert übernehmen'));
+    if (W.auto) autoMeasureStep(step, { body, liveBox, drawPoints, next, redraw });
   } else if (W.cfg.mode === 'secutest-geraet' && step.deviceGroup) {
-    every(900, async () => {
+    if (W.auto) autoDeviceStep(step, { body, liveBox, drawPoints, next, redraw });
+    else every(1500, async () => {
       try {
         const r = await get('/secutest/live');
         if (r.group) {
@@ -606,7 +695,16 @@ function measurePanel(step, body, redraw) {
         statusLine.textContent = `⚠ ${e.message}`;
       }
     });
-    add(ctrl, h('button', { class: 'btn', onclick: () => (Object.keys(lastLive).length ? (takeValues(step, lastLive), drawPoints(), toast('Live-Wert übernommen', 'ok')) : toast('Gerade kein Live-Wert vorhanden', 'warn')) }, '✓ Live-Wert übernehmen'));
+    add(ctrl, h('button', { class: 'btn', onclick: async () => {
+      if (!Object.keys(lastLive).length) return toast('Gerade kein Live-Wert vorhanden', 'warn');
+      try {
+        const r = await get('/secutest/live?confirm=1');
+        if (r.group !== step.deviceGroup) return toast('SECUTEST misst gerade nicht diesen Schritt', 'warn');
+        if (takeConfirmed(step, r)) (drawPoints(), toast('Live-Wert übernommen', 'ok'));
+      } catch (e) {
+        toast(e.message, 'bad');
+      }
+    } }, '✓ Live-Wert übernehmen'));
     body.appendChild(h('div', { class: 'small muted' }, 'Die endgültigen (um den Gebrauchsfehler korrigierten) Werte holt das Programm am Ende automatisch vom SECUTEST (Schritt „Bewertung“).'));
   }
 
@@ -618,6 +716,209 @@ function measurePanel(step, body, redraw) {
     : null;
 
   add(body, ctrl, statusLine, liveBox, ptsBox, disp, skip);
+}
+
+/** Messwert mit Einheit für Hinweise (Minimum, Maximum, Anzeige) */
+function shownValue(k, v) {
+  const q = state.meta.quantities;
+  const unit = q[k]?.unit ?? q[k.replace(/_(MIN|MAX|LIVE)$/, '')]?.unit ?? '';
+  return v ? `${valText(v)} ${unit}` : '–';
+}
+
+/** Hinweis bei Unruhe während der Messung (gehaltenes Minimum/Maximum weit weg von der ruhigen Anzeige) */
+function transientNote(group, r) {
+  const [hk, lk] = group === 'RISO' ? ['RISO_MIN', 'RISO_LIVE'] : [`${group}_MAX`, `${group}_LIVE`];
+  const kind = group === 'RISO' ? 'Minimum' : 'Maximum';
+  return [h('b', {}, '⚠ Der Messwert war unruhig'), ` (${kind} ${shownValue(hk, r.values[hk])}, Anzeige zuletzt ${shownValue(lk, r.live[lk])}) – wurde der Prüfling berührt? Der übernommene Wert hängt am ${kind} und wäre verfälscht. `];
+}
+
+/**
+ * Gerätegeführt mit Automatik: Das SECUTEST fährt seinen eigenen Ablauf (SK II: R_ISO → Ableitstrom →
+ * Funktionstest). Das Programm drückt Start bzw. ↵, liest mit und trägt den stabilen Wert ein. Vor jedem
+ * Übergang in eine Messung mit Prüfspannung bestätigt der Prüfer einmal „Hände weg“ (bei SK I hält er
+ * davor bei R_SL die Sonde). Nimmt das Gerät den Tastendruck über die Schnittstelle nicht an, bittet das
+ * Programm den Prüfer darum und liest trotzdem mit.
+ */
+function autoDeviceStep(step, { body, liveBox, drawPoints, next, redraw }) {
+  const pts = ensurePoint(step);
+  if (pts[pts.length - 1].values[step.key]?.value != null || W.skipped[step.id]) return; // schon gemessen
+  const banner = h('div', { class: 'alert info' });
+  body.prepend(banner);
+  const idx = W.stepIdx;
+  const group = remoteGroupOf(step); // I_B: am Gerät ein I_EA-Schritt, Werte aber als I_B
+  const alive = () => W && W.stepIdx === idx && W.auto && document.body.contains(banner);
+  const pause = h('button', { class: 'btn sm', onclick: () => ((W.auto = false), redraw()) }, '⏸ Automatik anhalten');
+  if (step.optional) {
+    // nicht Teil des Geräteablaufs (z. B. I_B bei SK I)
+    fill(banner, '⚙ Dieser Schritt gehört nicht zum Ablauf des SECUTEST – bei Bedarf von Hand messen, sonst geht es in 3 s weiter. ', pause);
+    return later(3000, () => alive() && next());
+  }
+  const press = async (label) => {
+    try {
+      await post('/secutest/key', { key: 'ENTER' });
+    } catch {
+      toast(`Bitte am SECUTEST ${label} drücken`, 'warn', 10000);
+    }
+  };
+  const watch = async () => {
+    banner.className = 'alert info';
+    fill(banner, h('b', {}, '⏱ SECUTEST misst – Prüfling nicht berühren!'), ' Der Wert wird übernommen, sobald er stabil ist. ', pause);
+    // Live-Werte schickt der Server beim Mitlesen – kein zusätzliches Abfragen
+    let measuring = false;
+    const unsub = onSecutest((type, data) => {
+      if (type !== 'measure' || data.group !== group || !document.body.contains(liveBox)) return;
+      measuring = true;
+      drawLive(liveBox, data.values);
+    });
+    // Nimmt das Gerät den Tastendruck über die Schnittstelle nicht an (oder zeigt es eine Meldung): Prüfer bitten
+    later(8000, () => !measuring && alive() && fill(banner, h('b', {}, '👉 Das SECUTEST misst noch nicht.'), ' Bitte am SECUTEST ↵ drücken bzw. die angezeigte Meldung bestätigen – das Programm liest dann mit. Prüfling nicht berühren! ', pause));
+    let r;
+    try {
+      r = await post('/secutest/device/await', { group });
+    } catch (e) {
+      if (!document.body.contains(banner) || e.data?.code === 'CANCELLED') return;
+      banner.className = 'alert bad';
+      return fill(banner, `✘ ${e.message} `, h('button', { class: 'btn sm', onclick: watch }, '↻ Weiter mitlesen'));
+    } finally {
+      unsub();
+    }
+    if (!document.body.contains(banner) || W.stepIdx !== idx) return;
+    drawLive(liveBox, { ...r.live, ...r.values });
+    const proceed = () => {
+      if (!takeConfirmed(step, r)) return fill(banner, '⚙ Kein stabiler Wert – „✓ Live-Wert übernehmen“ von Hand.');
+      drawPoints();
+      W.pendingEnter = true; // am Gerät mit ↵ zum nächsten Schritt
+      const p = pts[pts.length - 1];
+      const fails = step.quantities.filter((q) => passOf(q, p.values[q.key]) === false);
+      if (fails.length) {
+        banner.className = 'alert bad';
+        return fill(banner, `✘ ${fails.map((q) => q.label).join(', ')}: Grenzwert nicht eingehalten – Automatik angehalten. Mit „Weiter“ fortsetzen oder die Prüfung am SECUTEST abbrechen (▼).`);
+      }
+      banner.className = 'alert ok';
+      let m = 3;
+      const advance = () => {
+        if (!alive()) return;
+        if (m <= 0) return next();
+        fill(banner, `✔ Messwert übernommen – weiter in ${m} s `, pause);
+        m -= 1;
+        later(1000, advance);
+      };
+      advance();
+    };
+    if (r.transient) {
+      banner.className = 'alert warn';
+      return fill(banner, ...transientNote(group, r), 'Zum Wiederholen die Prüfung am SECUTEST abbrechen (▼) und neu starten. ', h('button', { class: 'btn sm', onclick: proceed }, 'Wert trotzdem übernehmen'));
+    }
+    proceed();
+  };
+  // Gerät zum Schritt bringen: Start (erster Schritt) bzw. ↵ (nach dem vorigen Schritt)
+  const needPress = !W.deviceRunning || W.pendingEnter;
+  const begin = async () => {
+    if (needPress) {
+      const label = W.deviceRunning ? '↵' : '↵ (Start)';
+      W.deviceRunning = true;
+      W.pendingEnter = false;
+      await press(label);
+    }
+    watch();
+  };
+  if (step.key === 'RSL' && needPress) {
+    // R_SL: der Prüfer hält die Sonde an das Schutzleiter-Teil und startet selbst
+    banner.className = 'alert warn';
+    return fill(banner, h('b', {}, '👉 Sonde an das Schutzleiter-Teil halten'), ' – dann startet der SECUTEST die Messung. ', h('button', { class: 'btn sm primary', onclick: begin }, '▶ Sonde liegt an – messen'), ' ', pause);
+  }
+  if (step.key !== 'RSL' && !W.handsOff) {
+    banner.className = 'alert warn';
+    return fill(banner, h('b', {}, '⚡ Jetzt misst der SECUTEST mit Prüfspannung'), ' (R_ISO mit 500 V). Prüfling, Klemme und Sonde nicht mehr berühren – danach liest das Programm mit und schaltet selbst weiter. ', h('button', { class: 'btn sm primary', onclick: () => ((W.handsOff = true), begin()) }, '▶ Hände weg – weiter'), ' ', pause);
+  }
+  later(100, begin); // erst wenn der Schritt angezeigt wird
+}
+
+/**
+ * Automatik (PC-gesteuert): Vorwarnung → Messung bis zum stabilen, zweimal gleich gelesenen Wert →
+ * eintragen → bewerten → weiterschalten. Hält bei Grenzwertverletzung oder Fehler an.
+ */
+function autoMeasureStep(step, { body, liveBox, drawPoints, next, redraw }) {
+  const pts = ensurePoint(step);
+  if (pts[pts.length - 1].values[step.key]?.value != null || W.skipped[step.id]) return; // schon gemessen
+  const banner = h('div', { class: 'alert info' });
+  body.prepend(banner);
+  if (step.optional) return fill(banner, '⚙ Optionaler Schritt – „▶ Messung starten“ oder unten als „entfällt“ markieren.');
+  const idx = W.stepIdx;
+  const group = remoteGroupOf(step);
+  const alive = () => W && W.stepIdx === idx && W.auto && document.body.contains(banner);
+  const pause = h('button', { class: 'btn sm', onclick: () => ((W.auto = false), redraw()) }, '⏸ Automatik anhalten');
+  let started = false;
+  let running = false;
+  let n = step.key === 'RSL' ? 5 : 3;
+
+  // Wert übernehmen, bewerten und weiterschalten (bei Grenzwertverletzung anhalten)
+  const finish = (r) => {
+    if (!takeConfirmed(step, r)) return fill(banner, '⚙ Kein stabiler Wert – „▶ Messung starten“ / „✓ Wert übernehmen“ von Hand.');
+    drawPoints();
+    const p = pts[pts.length - 1];
+    const fails = step.quantities.filter((q) => passOf(q, p.values[q.key]) === false);
+    if (fails.length) {
+      banner.className = 'alert bad';
+      return fill(banner, `✘ ${fails.map((q) => q.label).join(', ')}: Grenzwert nicht eingehalten – Automatik angehalten. Messung wiederholen oder mit „Weiter“ fortsetzen.`);
+    }
+    banner.className = 'alert ok';
+    let m = 3;
+    const more = h('button', { class: 'btn sm', onclick: () => (pts.push({ point: `Messpunkt ${pts.length + 1}`, values: {} }), redraw()) }, '+ Weiterer Messpunkt');
+    const advance = () => {
+      if (!alive()) return;
+      if (m <= 0) return next();
+      fill(banner, `✔ Messwert übernommen – weiter in ${m} s `, more, ' ', pause);
+      m -= 1;
+      later(1000, advance);
+    };
+    advance();
+  };
+
+  const measure = async (fresh = false) => {
+    if (running || (started && !fresh) || !alive()) return;
+    started = running = true;
+    banner.className = 'alert info';
+    fill(banner, h('b', {}, '⏱ Messung läuft – Prüfling nicht berühren!'), ' Der Wert wird übernommen, sobald er stabil ist.');
+    // Live-Werte schickt der Server während der Messung – kein zusätzliches Abfragen (das Gerät verkraftet nur wenige pro Sekunde)
+    const unsub = onSecutest((type, data) => type === 'measure' && data.group === group && document.body.contains(liveBox) && drawLive(liveBox, data.values));
+    let r;
+    try {
+      r = await post('/secutest/remote/auto', { group, fresh });
+    } catch (e) {
+      if (!document.body.contains(banner)) return;
+      banner.className = 'alert bad';
+      return fill(banner, `✘ ${e.message} – Automatik angehalten. `, h('button', { class: 'btn sm', onclick: () => measure(true) }, '↻ Messung wiederholen'));
+    } finally {
+      unsub();
+      running = false;
+    }
+    W.remoteActive = true;
+    if (!document.body.contains(banner) || W.stepIdx !== idx) return;
+    drawLive(liveBox, { ...r.live, ...r.values });
+    if (r.transient) {
+      // gehaltenes Minimum/Maximum weit weg von der ruhigen Anzeige: übernommener Wert wäre verfälscht
+      banner.className = 'alert warn';
+      return fill(banner, ...transientNote(group, r), h('button', { class: 'btn sm primary', onclick: () => measure(true) }, '↻ Messung wiederholen'), ' ', h('button', { class: 'btn sm', onclick: () => finish(r) }, 'Wert trotzdem übernehmen'));
+    }
+    finish(r);
+  };
+
+  const countdown = () => {
+    if (started || !alive()) return;
+    if (n <= 0) return measure();
+    fill(banner, h('b', {}, `⚙ Messung startet automatisch in ${n} s`), ` – ${step.key === 'RSL' ? 'Sonde an das Schutzleiter-Teil halten, ' : ''}Prüfling nicht berühren. `, h('button', { class: 'btn sm primary', onclick: () => measure() }, '▶ Sofort messen'), ' ', pause);
+    n -= 1;
+    later(1000, countdown);
+  };
+
+  // Vor der ersten Messung mit Prüfspannung (R_ISO 500 V, Ableitströme) einmal bestätigen lassen, dass niemand
+  // den Prüfling berührt – z. B. direkt nach der Sichtprüfung. R_SL misst mit der Sonde in der Hand.
+  if (step.key !== 'RSL' && !W.handsOff) {
+    banner.className = 'alert warn';
+    return fill(banner, h('b', {}, '⚡ Jetzt folgen die Messungen mit Prüfspannung'), ' (R_ISO mit 500 V). Prüfling, Klemme und Sonde nicht mehr berühren – danach misst das Programm automatisch weiter. ', h('button', { class: 'btn sm primary', onclick: () => ((W.handsOff = true), (banner.className = 'alert info'), countdown()) }, '▶ Hände weg – Messungen starten'), ' ', pause);
+  }
+  later(100, countdown); // erst wenn der Schritt angezeigt wird (alive prüft, ob der Hinweis im Dokument steht)
 }
 
 async function refreshLimits() {
@@ -638,7 +939,7 @@ function drawLive(box, values) {
     if (v.value == null && !v.text) continue;
     const base = k.replace(/_(MIN|MAX|AC|DC|TRMS|LIVE)$/, '');
     const unit = q[k]?.unit ?? q[base]?.unit ?? '';
-    box.appendChild(h('div', { class: 'lv' }, h('div', { class: 'k' }, k.replace(/_/g, ' ')), h('div', { class: 'v' }, `${v.qualifier || ''}${v.value == null ? v.text : fmt.num(v.value)} `, h('small', {}, unit))));
+    box.appendChild(h('div', { class: 'lv' }, h('div', { class: 'k' }, k.replace(/_LIVE$/, ' (Anzeige)').replace(/_/g, ' ')), h('div', { class: 'v' }, `${v.qualifier || ''}${v.value == null ? v.text : fmt.num(v.value)} `, h('small', {}, unit))));
   }
 }
 
@@ -690,36 +991,68 @@ function measurePanelFT(step, body, redraw) {
     const read = async () => {
       try {
         const r = W.cfg.mode === 'secutest-pc' ? await get('/secutest/remote/read?group=FT') : await get('/secutest/live');
-        lastLive = r.values || {};
-        const any = Object.values(lastLive).some((v) => v.value != null);
-        statusLine.textContent = any ? '⏱ Werte vom SECUTEST (Netz an Prüfdose)' : 'Noch keine Werte – Taste FUNCTION-TEST (14) drücken, Prüfling einschalten.';
+        // „bereit“ meldet das Gerät nicht (vor Taste 14 keine Werte) – „läuft“ zeigt der Energiezähler; gerätegeführt
+        // kann direkt nach dem Wechsel noch der vorige Messschritt laufen: dessen Werte nicht anzeigen
+        lastLive = r.ftActive ? r.values || {} : {};
+        statusLine.textContent = r.ftActive
+          ? '⏱ Funktionstest läuft – „📥 Werte vom SECUTEST übernehmen“, solange er läuft.'
+          : W.cfg.mode === 'secutest-geraet'
+            ? 'Funktionstest läuft noch nicht – am SECUTEST die Meldung „Prüfling ausschalten“ mit ↵ bestätigen, dann sobald die Lampe (15) blinkt mit Taste FUNCTION-TEST (14) starten.'
+            : 'Funktionstest läuft noch nicht – am SECUTEST einstellen und, sobald die Lampe (15) blinkt, mit Taste FUNCTION-TEST (14) starten.';
         drawLive(liveBox, lastLive);
       } catch (e) {
         statusLine.textContent = `⚠ ${e.message}`;
       }
     };
-    if (W.cfg.mode === 'secutest-pc') add(ctrl, h('button', { class: 'btn primary', onclick: async () => {
+    if (W.cfg.mode === 'secutest-pc') {
+      // Den Funktionstest macht der Prüfer am Gerät – das Programm gibt nur die Tasten frei (Fernsteuerung aus,
+      // das Gerät steht dann am Anfang seines Prüfprogramms). Kein Umstellen per Schnittstelle.
+      body.prepend(h('div', { class: 'alert info' }, h('b', {}, '👉 Funktionstest bitte am SECUTEST einstellen und durchführen.'), ' Die Fernsteuerung ist aus, alle Tasten sind frei. Solange er läuft: „📥 Werte vom SECUTEST übernehmen“. Den Funktionstest im Ablauf des SECUTEST (ohne Umstellen) gibt es im Modus „gerätegeführt“.'));
+      if (W.remoteActive) post('/secutest/remote/end').then(() => (W.remoteActive = false), (e) => toast(e.message, 'bad'));
+    } else if (W.cfg.mode === 'secutest-geraet') {
+      // im Ablauf des SECUTEST folgt der Funktionstest von selbst – mit ↵ vom letzten Messschritt dorthin
+      if (W.auto && W.pendingEnter) {
+        W.pendingEnter = false;
+        post('/secutest/key', { key: 'ENTER' }).catch(() => toast('Bitte am SECUTEST ↵ drücken', 'warn', 10000));
+      }
+      body.prepend(
+        h('div', { class: 'alert info' },
+          h('b', {}, '👉 Funktionstest am SECUTEST'), ' – er folgt im Ablauf des Geräts von selbst:',
+          h('ol', { style: { margin: '6px 0 0', paddingLeft: '20px' } },
+            h('li', {}, 'Meldung „Prüfling ausschalten“ am SECUTEST mit ↵ bestätigen.'),
+            h('li', {}, 'Sobald die Lampe (15) blinkt: Taste FUNCTION-TEST (14), Prüfling einschalten, Funktion prüfen. Solange er läuft, bei Bedarf „📥 Werte vom SECUTEST übernehmen“.'),
+            h('li', {}, 'Prüfling am eigenen Schalter ausschalten, Taste 14, dann am SECUTEST „Funktionstest bestanden?“ beantworten – das Ergebnis holt das Programm automatisch.'),
+            h('li', {}, 'Unten die Funktion beurteilen und „Weiter“.')))
+      );
+    }
+    every(2000, read);
+    add(ctrl, h('button', { class: 'btn ok', onclick: async () => {
       try {
-        const r = await post('/secutest/remote/start', { group: 'FT' });
-        W.remoteActive = true;
-        if (r.manual) toast(r.message, 'warn', 6000);
-        every(800, read);
+        const r = await get('/secutest/remote/read?group=FT&confirm=1');
+        if (r.ftActive === false) return toast('Funktionstest läuft gerade nicht – Werte bitte übernehmen, solange er am SECUTEST läuft.', 'warn', 6000);
+        const vals = {};
+        for (const [k, v] of Object.entries(r.values)) if (v.value != null) vals[k] = v;
+        if (!Object.keys(vals).length) return toast('Keine Werte vorhanden', 'warn');
+        for (const q of step.quantities) if (vals[q.key]) p.values[q.key] = { ...vals[q.key], source: 'secutest' };
+        drawInputs();
+        toast(r.unconfirmed?.length ? `Werte übernommen – nicht stabil gelesen: ${r.unconfirmed.join(', ')}` : 'Werte vom SECUTEST übernommen', r.unconfirmed?.length ? 'warn' : 'ok', 6000);
       } catch (e) {
         toast(e.message, 'bad');
       }
-    } }, '▶ Funktionstest – Werte lesen'));
-    else every(1000, read);
-    add(ctrl, h('button', { class: 'btn ok', onclick: () => {
-      const vals = {};
-      for (const [k, v] of Object.entries(lastLive)) if (v.value != null) vals[k] = v;
-      if (!Object.keys(vals).length) return toast('Keine Werte vorhanden', 'warn');
-      for (const q of step.quantities) if (vals[q.key]) p.values[q.key] = { ...vals[q.key], source: 'secutest' };
-      stopTimers();
-      drawInputs();
-      toast('Werte übernommen', 'ok');
-    } }, '✓ Werte übernehmen'));
+    } }, '📥 Werte vom SECUTEST übernehmen'));
   }
   add(body, ctrl, statusLine, liveBox, grid, skipControl(step, redraw));
+}
+
+/**
+ * Läuft am SECUTEST noch der Funktionstest (Netz an der Prüfdose), vor dem Verlassen des Schritts daran
+ * erinnern – beenden muss ihn der Prüfer am Gerät. false = im Schritt bleiben.
+ */
+async function functionTestFinished() {
+  if (!W || W.cfg.mode === 'manuell' || !state.secutest?.connected) return true;
+  const r = await get('/secutest/remote/read?group=FT').catch(() => null);
+  if (!r?.ftActive) return true;
+  return confirmDialog('Der Funktionstest ist am SECUTEST noch nicht abgeschlossen – eventuell liegt noch Netzspannung an der Prüfdose. Bitte am Gerät beenden (Prüfling am eigenen Schalter ausschalten, Taste 14) und die Abfrage am Gerät beantworten. Trotzdem weiter?', { title: 'Funktionstest noch aktiv', confirmLabel: 'Trotzdem weiter' });
 }
 
 // ---------------------------------------------------------------------------
@@ -771,6 +1104,7 @@ async function fetchFromSecutest(redraw) {
       toast(`SECUTEST hat ${pro.classification.protectionClass} erkannt (erfasst: ${W.device.protection_class}). Bitte Gerätedaten prüfen.`, 'warn', 9000);
     }
     if (pro.classification.dutNotSwitchedOn) toast('Hinweis vom SECUTEST: Prüfling war bei R_ISO/I_EA nicht eingeschaltet!', 'warn', 9000);
+    W.protocolFetched = true;
     toast(`${n} Messwert(e) vom SECUTEST übernommen`, 'ok');
     redraw();
   } catch (e) {
@@ -786,7 +1120,11 @@ function resultPanel(step, body, navigate, redraw) {
   const nextBox = h('span');
   let evaluation = null;
 
-  if (W.cfg.mode === 'secutest-geraet') body.appendChild(h('div', { class: 'alert info' }, h('div', { class: 'row between' }, h('span', {}, 'Hat das SECUTEST „bestanden/nicht bestanden“ angezeigt? Dann jetzt alle Werte übernehmen:'), h('button', { class: 'btn primary', onclick: () => fetchFromSecutest(redraw) }, '📥 Ergebnis vom SECUTEST abholen'))));
+  if (W.cfg.mode === 'secutest-geraet') {
+    body.appendChild(h('div', { class: 'alert info' }, h('div', { class: 'row between' }, h('span', {}, W.protocolFetched ? 'Ergebnis vom SECUTEST übernommen. Bei Bedarf erneut abholen:' : 'Hat das SECUTEST „bestanden/nicht bestanden“ angezeigt? Dann jetzt alle Werte übernehmen:'), h('button', { class: 'btn primary', onclick: () => fetchFromSecutest(redraw) }, '📥 Ergebnis vom SECUTEST abholen'))));
+    resultRedraw = redraw;
+    if (W.protocolReady && !W.protocolFetched) setTimeout(() => fetchFromSecutest(redraw), 0);
+  }
   if (W.remoteActive) post('/secutest/remote/end').then(() => (W.remoteActive = false)).catch(() => {});
 
   const interval = input({ type: 'number', min: 1, max: 120, value: W.intervalMonths, style: { maxWidth: '90px' }, oninput: (e) => ((W.intervalMonths = Number(e.target.value) || W.intervalMonths), drawNext()) });
