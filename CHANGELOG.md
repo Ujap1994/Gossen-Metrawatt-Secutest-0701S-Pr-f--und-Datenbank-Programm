@@ -11,11 +11,14 @@ Der Prüfmanager ist jetzt ein **eigenständiges Desktop-Programm** (Electron) f
 <img src="docs/images/90-desktop-programm-automatik.png" alt="Desktop-Programm: automatische Messung R_ISO" width="760">
 
 ### Neu
-* **Eigenes Programmfenster** mit Menü, Programm-Icon und gemerkter Fenstergröße. Es läuft immer nur ein Fenster; ein zweiter Start holt es nach vorn.
+* **Eigenes Programmfenster** mit Menü und Programm-Icon, startet maximiert. Es läuft immer nur ein Fenster; ein zweiter Start holt es nach vorn.
 * **Fenster schließen beendet das Programm** sauber: Datenbank gesperrt, SECUTEST getrennt. Bei einer nicht gespeicherten Prüfung fragt das Programm vorher nach.
 * **Prüfprotokoll und Prüfplaketten** öffnen sich in eigenen Programmfenstern; Drucken bzw. „Als PDF sichern“ über den Druckdialog. Externe Links öffnen im Standardbrowser.
 * **Installer und Pakete für alle Systeme:** Windows-Installer und portable Version (x64, ARM64), macOS-.dmg (Universal, Apple Silicon, Intel), Linux als AppImage, deb, rpm, pacman (Arch), tar.gz (x64, ARM64) sowie Snap und Flatpak.
 * **Protokolldateien** zur Fehlersuche über *Hilfe → Protokolldateien öffnen*.
+* **Automatik auch im Modus „gerätegeführt“:** Das SECUTEST fährt seinen eigenen Prüfablauf (z. B. SK II: R_ISO → Ableitstrom → Funktionstest). Das Programm drückt Start bzw. ↵, liest jeden Schritt mit, trägt den stabilen Wert ein und schaltet weiter. Den Funktionstest erreicht das Gerät von selbst: Der Prüfer bestätigt „Prüfling ausschalten“, führt ihn durch und beantwortet „bestanden?“; danach holt das Programm das Protokoll des SECUTEST ab. Nimmt das Gerät einen Tastendruck über die Schnittstelle nicht an, bittet das Programm, ↵ am Gerät zu drücken.
+* **„Hände weg“ vor der Prüfspannung:** Vor der ersten Messung mit 500 V bestätigt der Prüfer einmal, dass niemand den Prüfling berührt. War ein Messwert unruhig (z. B. Prüfling berührt), hält die Automatik an, statt einen verfälschten Wert zu übernehmen.
+* PC-gesteuert: Für den Funktionstest schaltet das Programm nur die Fernsteuerung ab und stellt am SECUTEST nichts um.
 
 <img src="docs/images/91-desktop-programm-pruefprotokoll.png" alt="Prüfprotokoll im eigenen Programmfenster" width="560">
 

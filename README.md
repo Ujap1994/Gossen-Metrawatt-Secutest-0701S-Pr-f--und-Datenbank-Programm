@@ -236,7 +236,7 @@ Technische Details zum Protokoll: **[docs/RS232-PROTOKOLL.md](docs/RS232-PROTOKO
 
 | Betriebsart | Ablauf | Geeignet für |
 |---|---|---|
-| **SECUTEST – gerätegeführt** (empfohlen) | Du bedienst das SECUTEST wie gewohnt nach dessen Bedienerführung. Das Programm erkennt per `MES?`, welcher Schritt gerade läuft, zeigt Grafik und Live-Werte und übernimmt am Ende **alle** Messwerte samt Sichtprüfungsmängeln per `PRO?` | normale Prüfungen, auch im AUTO-Modus |
+| **SECUTEST – gerätegeführt** (empfohlen) | Das SECUTEST führt durch seinen eigenen Prüfablauf (z. B. SK II: R<sub>ISO</sub> → Ableitstrom → Funktionstest). Das Programm erkennt per `MES?`, welcher Schritt gerade läuft, und zeigt Grafik und Live-Werte. Mit **Automatik** drückt es Start bzw. ↵ (`TAS!4`), übernimmt jeden stabilen Wert und schaltet weiter; den Funktionstest machst du am Gerät. Am Ende übernimmt es **alle** Messwerte samt Sichtprüfungsmängeln per `PRO?` | normale Prüfungen, auch im AUTO-Modus |
 | **SECUTEST – PC-gesteuert** | Das Programm macht eine **Anschlusskontrolle** (Kurzschluss, Sonde, Prüfling eingeschaltet, Schutzleiter), startet dann jede Messung selbst (`MES!`), zeigt Live-Werte und übernimmt die WC-Werte (`WER?`) | Einzelmessungen, mehrere Messpunkte, volle Kontrolle |
 | **Manuell** | Werte vom Display oder einem anderen Prüfgerät eintippen. Optional berücksichtigt das Programm den Gebrauchsfehler laut Tabelle im Anhang | ohne Schnittstelle, andere Prüfgeräte, Nachtragen |
 

@@ -76,8 +76,8 @@ test('Desktop-Programm: automatische SK-II-Prüfung, Funktionstest von Hand, Spe
     await expect(stepTitle(page)).toContainText('Funktionstest', { timeout: 40_000 });
 
     // Funktionstest am SECUTEST (simulierte Taste 14), Werte per Knopf
-    await expect(page.getByText('Funktionstest bitte am SECUTEST durchführen')).toBeVisible();
-    await expect(page.getByText(/Funktionstest läuft noch nicht – am SECUTEST die Meldung mit ↵ bestätigen/)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText('Funktionstest bitte am SECUTEST einstellen und durchführen')).toBeVisible();
+    await expect(page.getByText(/Funktionstest läuft noch nicht – am SECUTEST einstellen/)).toBeVisible({ timeout: 15_000 });
     expect((await api(page, 'POST', '/secutest/key', { key: 'FUNCTION_TEST' })).status).toBe(200);
     await expect(page.getByText(/Funktionstest läuft – „📥/)).toBeVisible({ timeout: 15_000 });
     await page.getByRole('button', { name: /Werte vom SECUTEST übernehmen/ }).click();
@@ -109,6 +109,63 @@ test('Desktop-Programm: automatische SK-II-Prüfung, Funktionstest von Hand, Spe
     await expect(report.locator('body')).toContainText('Netzteil SK II');
     await report.screenshot({ path: path.join(SHOTS, '5-pruefprotokoll.png') });
     await report.close();
+  } finally {
+    await app.close();
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('Desktop-Programm: gerätegeführte SK-II-Prüfung im Ablauf des SECUTEST, Ergebnis automatisch übernommen', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'secutest-e2e-'));
+  fs.mkdirSync(SHOTS, { recursive: true });
+  const { app, page } = await launch(dir);
+  const key = async (k) => expect((await api(page, 'POST', '/secutest/key', { key: k })).status).toBe(200);
+  try {
+    const deviceId = await prepare(page, dir);
+    await page.evaluate((id) => (location.hash = `#/inspect?device=${id}`), deviceId);
+    await page.reload();
+
+    await page.locator('.choice', { hasText: 'gerätegeführt' }).click();
+    await page.locator('.choice', { hasText: 'Schutzklasse II' }).click();
+    await page.getByRole('button', { name: /Prüfung starten/ }).click();
+    await expect(page.getByText('⚙ Automatik an')).toBeVisible();
+
+    // Vorbereitung: Prüfprogramm am SECUTEST wählen, dann zur Sichtprüfung
+    await page.getByRole('button', { name: /Automatische Prüfung starten/ }).click();
+    await expect(stepTitle(page)).toContainText('Sichtprüfung', { timeout: 30_000 });
+    await page.getByRole('button', { name: /Alle in Ordnung/ }).click();
+    await page.getByRole('button', { name: /^Weiter/ }).click();
+
+    // erst nach „Hände weg“ startet das Programm den Ablauf am SECUTEST (↵) und liest R_ISO, dann den Ableitstrom mit
+    await expect(stepTitle(page)).toContainText('Isolationswiderstand');
+    await page.getByRole('button', { name: /Hände weg – weiter/ }).click();
+    await expect(page.getByText('SECUTEST misst – Prüfling nicht berühren!')).toBeVisible({ timeout: 15_000 });
+    await page.screenshot({ path: path.join(SHOTS, '6-geraet-riso.png') });
+    await expect(stepTitle(page)).toContainText('Berührungsstrom', { timeout: 40_000 });
+    await expect(stepTitle(page)).toContainText('Funktionstest', { timeout: 40_000 });
+
+    // Funktionstest im Ablauf des Geräts: Meldung „Prüfling ausschalten“ (↵), Taste 14, Werte, Taste 14, „bestanden?“ (↵)
+    await expect(page.getByText('Funktionstest am SECUTEST')).toBeVisible();
+    await expect.poll(async () => (await api(page, 'GET', '/secutest/live')).body?.running).toEqual([115]);
+    await key('ENTER');
+    await key('FUNCTION_TEST');
+    await expect(page.getByText(/Funktionstest läuft – „📥/)).toBeVisible({ timeout: 15_000 });
+    await page.getByRole('button', { name: /Werte vom SECUTEST übernehmen/ }).click();
+    await expect(page.locator('.card.stack .grid input').first()).not.toHaveValue('');
+    await page.getByRole('button', { name: /Alle in Ordnung/ }).click();
+    await page.screenshot({ path: path.join(SHOTS, '7-geraet-funktionstest.png') });
+    await key('FUNCTION_TEST');
+    await key('ENTER'); // „Funktionstest bestanden?“ – ja → Protokoll fertig
+    await expect(page.getByText(/Protokoll fertig/)).toBeVisible({ timeout: 15_000 });
+    await page.getByRole('button', { name: /^Weiter/ }).click();
+
+    // Bewertung: Protokoll des SECUTEST wird ohne Klick übernommen
+    await expect(stepTitle(page)).toContainText('Bewertung');
+    await expect(page.getByText('Ergebnis vom SECUTEST übernommen')).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText('BESTANDEN', { exact: false }).first()).toBeVisible();
+    await page.screenshot({ path: path.join(SHOTS, '8-geraet-bewertung.png') });
+    await page.getByRole('button', { name: /Prüfung speichern/ }).click();
+    await expect.poll(async () => (await api(page, 'GET', `/devices/${deviceId}`)).body?.inspections?.length).toBe(1);
   } finally {
     await app.close();
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

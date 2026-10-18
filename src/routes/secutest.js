@@ -14,6 +14,12 @@ module.exports = function secutestRoutes(manager) {
     if (!d().connected) throw Object.assign(new Error('Nicht mit dem SECUTEST verbunden.'), { status: 409, code: 'NOT_CONNECTED' });
   };
 
+  // Jede andere Anfrage an das Gerät beendet ein laufendes Mitlesen (sonst fragen zwei Schleifen das Gerät ab)
+  r.use((req, res, next) => {
+    if (/^\/(live|result|remote\/|precheck|switch|identify|command|disconnect|scan|connect)/.test(req.path)) manager.cancelDeviceAwait();
+    next();
+  });
+
   r.get('/status', (req, res) => res.json(manager.status()));
   r.get('/events', (req, res) => manager.subscribe(res));
   r.get('/ports', async (req, res) => res.json(await manager.listPorts()));
@@ -138,6 +144,16 @@ module.exports = function secutestRoutes(manager) {
   r.post('/remote/auto', async (req, res) => {
     need();
     res.json(await manager.autoMeasure(String(req.body?.group || ''), { fresh: !!req.body?.fresh }));
+  });
+
+  // gerätegeführt mit Automatik: warten, bis das SECUTEST den Schritt misst und der Wert stabil ist
+  r.post('/device/await', async (req, res) => {
+    need();
+    const run = manager.deviceAwait(String(req.body?.group || ''));
+    const token = manager._awaitSeq;
+    // Seite geschlossen oder neu geladen: nicht weiter am Gerät abfragen
+    res.on('close', () => !res.writableFinished && manager._awaitSeq === token && manager.cancelDeviceAwait());
+    res.json(await run);
   });
 
   r.get('/remote/read', async (req, res) => {

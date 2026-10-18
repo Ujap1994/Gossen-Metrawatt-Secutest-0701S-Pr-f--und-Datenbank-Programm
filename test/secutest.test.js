@@ -99,6 +99,33 @@ test('Treiber ↔ Simulator: Identifikation, Remote-Messung, gerätegeführter A
   assert.equal(d.connected, false);
 });
 
+test('Simulator: gerätegeführter Ablauf wie am SECUTEST S – jeder Schritt bis ↵, dann Meldung, Funktionstest, Frage', async () => {
+  const d = new SecutestDriver({ settleMs: 1 });
+  await d.connect({ simulator: true, scenario: 'sk2-ok', simulatorOptions: { latencyMs: 1 } });
+  const running = async () => (await d.getStatus()).running;
+  await d.setSwitch('SK II');
+  await d.pressKey('ENTER'); // Start
+  assert.deepEqual(await running(), [16], 'R_ISO läuft, bis ↵');
+  await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(await running(), [16]);
+  await d.pressKey('ENTER');
+  assert.deepEqual(await running(), [24], 'Ableitstrom über die Sonde');
+  await d.pressKey('ENTER');
+  assert.deepEqual(await running(), [115], 'Meldung „Prüfling ausschalten“');
+  await d.pressKey('ENTER');
+  assert.deepEqual(await running(), [64, 48, 56], 'Funktionstest bereit');
+  await d.pressKey('FUNCTION_TEST'); // Taste 14: Netz an
+  assert.ok((await d.getValues([55]))[55].value != null, 'Energiezähler läuft');
+  await d.pressKey('FUNCTION_TEST'); // Taste 14: Netz aus → Frage „bestanden?“
+  assert.ok((await d.getValues([55]))[55].value != null, 'Werte stehen bis zur Antwort');
+  const prf = new Promise((r) => d.once('device-event', r));
+  await d.pressKey('ENTER'); // bestanden
+  assert.equal((await prf).type, 'protocol-ready');
+  const pro = await d.readProtocol();
+  assert.deepEqual([pro.performed.RISO, pro.performed.IEA, pro.performed.DI, pro.verdict], [true, true, true, 'bestanden']);
+  await d.disconnect();
+});
+
 test('Simulator-Szenario mit Isolationsfehler', async () => {
   const d = new SecutestDriver({ settleMs: 5 });
   await d.connect({ simulator: true, scenario: 'sk1-riso', simulatorOptions: { latencyMs: 2 } });
@@ -324,16 +351,48 @@ test('Automatik R_SL misst beide Polungen', async () => {
   assert.ok(port.writes.indexOf(cmd('MES!10')) > port.writes.indexOf(cmd('MES!8')));
 });
 
-test('Funktionstest macht der Prüfer am SECUTEST: Fernsteuerung aus und Programm FUNCTION-TEST, keine Taste', async () => {
+test('PC-gesteuert, Funktionstest: nur Fernsteuerung aus – kein künstliches Umstellen, keine Taste', async () => {
   const mgr = new SecutestManager();
   mgr.driver.opts.settleMs = 1;
-  const port = attach(mgr.driver, { 'TAS!R$7F': frame('.Yx$23'), 'TAS!r$9F': frame('.Yx$23') + '\x03', [cmd('RST!1')]: frame('.Yx$23') });
+  const port = attach(mgr.driver, { 'TAS!R$7F': frame('.Yx$23'), 'TAS!r$9F': frame('.Yx$23') + '\x03' });
   await mgr.driver.setRemote(true);
   const r = await mgr.remoteStart('FT');
   assert.equal(r.manual, true);
   assert.equal(mgr.driver.remoteActive, false, 'sonst sind die Tasten gesperrt');
-  // nur Fernsteuerung aus brächte den SECUTEST an den Anfang seines Prüfprogramms zurück (am Gerät beobachtet)
-  assert.deepEqual(port.writes, ['TAS!R$7F', 'TAS!r$9F', cmd('RST!1')], 'kein TAS!5 – Netz an die Prüfdose legt der Prüfer');
+  assert.deepEqual(port.writes, ['TAS!R$7F', 'TAS!r$9F']);
+});
+
+test('Gerätegeführt mit Automatik: wartet, bis das SECUTEST den Schritt misst, und liest ihn schonend mit', async () => {
+  const mgr = new SecutestManager();
+  mgr.driver.opts.settleMs = 1;
+  const riso = dev('WERTEx=19:>310.0M\xea;20:>310.0M\xea;21:>310.0M\xea;96:0538.V;18:>310.0M\xea');
+  // Mitschnitt gerätegeführt: erst noch kein Schritt, dann läuft R_ISO (Laufnummern 18 und 96)
+  const port = attach(mgr.driver, { 'MES?$48': [frame('A0;$D0'), frame('A0;$D0'), frame('A0;18;96$E3')], [cmd('WER?19,20,21,96,18')]: riso });
+  const r = await mgr.deviceAwait('RISO', { readEveryMs: 1 });
+  assert.deepEqual([r.values.RISO.value, r.values.RISO.qualifier, r.live.RISO_LIVE.qualifier, r.transient], [310, '>', '>', false]);
+  const order = port.writes.map((w) => w.slice(0, 4));
+  assert.deepEqual(order.slice(0, 3), ['MES?', 'MES?', 'MES?'], 'liest Werte erst, wenn das Gerät den Schritt misst');
+  assert.equal(order.filter((w) => w === 'WER?').length, 2, 'zwei gleiche Ablesungen');
+});
+
+test('Gerätegeführt: I_B über die Sonde ist am Gerät der I_EA-Schritt; ein neues Mitlesen beendet das alte', async () => {
+  const mgr = new SecutestManager();
+  await mgr.connect({ simulator: true, scenario: 'sk2-ok', simulatorOptions: { latencyMs: 1 } });
+  mgr.driver.opts.settleMs = 1;
+  try {
+    await mgr.driver.setSwitch('SK II');
+    await mgr.driver.pressKey('ENTER'); // Start: R_ISO
+    const old = assert.rejects(mgr.deviceAwait('IB', { readEveryMs: 5 }), (e) => e.code === 'CANCELLED'); // wartet, R_ISO ist nicht sein Schritt
+    await new Promise((r) => setTimeout(r, 30));
+    const riso = await mgr.deviceAwait('RISO', { readEveryMs: 5 });
+    await old;
+    assert.ok(riso.values.RISO.value > 1);
+    await mgr.driver.pressKey('ENTER'); // weiter zum Ableitstrom über die Sonde (Laufnummer 24)
+    const ib = await mgr.deviceAwait('IB', { readEveryMs: 5 });
+    assert.ok(ib.values.IB.value != null && ib.live.IB_LIVE.value != null, 'Werte als I_B');
+  } finally {
+    await mgr.disconnect();
+  }
 });
 
 test('Programm FUNCTION-TEST: vor Taste 14 keine Werte, danach zählt der Energiezähler', async () => {

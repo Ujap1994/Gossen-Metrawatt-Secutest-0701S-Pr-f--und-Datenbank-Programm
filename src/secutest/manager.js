@@ -312,21 +312,8 @@ class SecutestManager {
     let prev = null;
     for (;;) {
       const { main, live } = await this._readGroup(group, def.live);
-      this.broadcast('measure', { group, values: { ...live, ...main } });
-      const m = main[def.final];
-      const liveKey = Object.keys(live)[0];
-      // eingeschwungen: übernommener Wert in zwei Ablesungen gleich und auch die Anzeige ruhig
-      const steady = m?.value != null && prev?.main[def.final]?.text === m.text && prev.main[def.final].unit === m.unit && (!liveKey || near(live[liveKey], prev.live[liveKey]));
-      if (steady) {
-        const values = {};
-        const unconfirmed = [];
-        for (const [k, v] of Object.entries(main)) {
-          if (prev.main[k]?.text === v.text) values[k] = v;
-          else if (v.value != null) unconfirmed.push(k);
-        }
-        const transient = !!TRANSIENT[group]?.({ ...main, ...live });
-        return { group, values, live, unconfirmed, transient, ms: Date.now() - t0 };
-      }
+      const done = this._steady(group, prev, main, live);
+      if (done) return { ...done, ms: Date.now() - t0 };
       prev = { main, live };
       if (Date.now() - t0 > maxMs) throw Object.assign(new Error(`Kein stabiler Messwert innerhalb von ${Math.round(maxMs / 1000)} s – wird der Prüfling berührt? Anschluss prüfen und wiederholen.`), { status: 504, code: 'UNSTABLE' });
       await sleep(readEveryMs);
@@ -334,12 +321,66 @@ class SecutestManager {
   }
 
   /**
-   * Funktionstest (PC-gesteuert): Den führt der Prüfer am SECUTEST durch. Fernsteuerung aus (sonst sperrt
-   * das Gerät seine Tasten) und Programm FUNCTION-TEST wählen – nur die Fernsteuerung abzuschalten bringt
-   * das Gerät an den Anfang seines Prüfprogramms zurück, von dort käme man erst über dessen ganzen Ablauf
-   * zum Funktionstest. Danach stellt das Programm nichts mehr um; beendet wird am Gerät.
-   * (Am Gerät gemessen: vor Taste 14 meldet das Programm FUNCTION-TEST keine Werte, „bereit“ ist über die
-   * Schnittstelle nicht erkennbar; ^C beendet einen Funktionstest nicht.)
+   * Eine Ablesung auswerten (Live-Werte gehen per Ereignis „measure“ an die Oberfläche). Eingeschwungen, wenn der
+   * übernommene Wert in zwei Ablesungen gleich und auch die Anzeige ruhig ist; dann Werte samt Unruhe-Prüfung, sonst null.
+   */
+  _steady(group, prev, main, live) {
+    const def = REMOTE[group];
+    this.broadcast('measure', { group, values: { ...live, ...main } });
+    const m = main[def.final];
+    const liveKey = Object.keys(live)[0];
+    const steady = m?.value != null && prev?.main[def.final]?.text === m.text && prev.main[def.final].unit === m.unit && (!liveKey || near(live[liveKey], prev.live[liveKey]));
+    if (!steady) return null;
+    const values = {};
+    const unconfirmed = [];
+    for (const [k, v] of Object.entries(main)) {
+      if (prev.main[k]?.text === v.text) values[k] = v;
+      else if (v.value != null) unconfirmed.push(k);
+    }
+    return { group, values, live, unconfirmed, transient: !!TRANSIENT[group]?.({ ...main, ...live }) };
+  }
+
+  /**
+   * Gerätegeführt mit Automatik: Das SECUTEST fährt seinen eigenen Ablauf (z. B. SK II: R_ISO → Ableitstrom →
+   * Funktionstest). Warten, bis es den Schritt `group` misst und der Wert eingeschwungen ist; weiter schaltet
+   * die Oberfläche mit ↵. Je Ablesung eine Status- und eine Wertabfrage (das Gerät verkraftet nur wenige pro Sekunde).
+   */
+  async deviceAwait(group, { readEveryMs = 1200, maxMs = 120000 } = {}) {
+    const def = REMOTE[group];
+    if (!def || group === 'FT') throw Object.assign(new Error(`Für „${group}“ gibt es kein automatisches Mitlesen.`), { status: 400 });
+    // Gruppe am Gerät: I_B (Sonde) misst das SECUTEST als I_EA-Schritt
+    const deviceGroup = groupForMeasurementNo(def.read[0]);
+    const token = this.cancelDeviceAwait();
+    const t0 = Date.now();
+    let prev = null;
+    for (;;) {
+      if (token !== this._awaitSeq) throw Object.assign(new Error('Mitlesen beendet.'), { status: 409, code: 'CANCELLED' });
+      const st = this._stableStatus(await this.driver.getStatus());
+      const running = st.running.filter((n) => groupForMeasurementNo(n) === deviceGroup);
+      if (running.length) {
+        // Anzeigewert: die laufende Messnummer (z. B. R_ISO Nr. 18, I_EA über Sonde Nr. 24)
+        const nums = running.filter((n) => !def.read.includes(n));
+        const { main, live } = await this._readGroup(group, nums.length ? { [`${def.final}_LIVE`]: nums[0] } : def.live);
+        const done = this._steady(group, prev, main, live);
+        if (done) return { ...done, running: st.running, ms: Date.now() - t0 };
+        prev = { main, live };
+      } else prev = null;
+      if (Date.now() - t0 > maxMs) throw Object.assign(new Error('Das SECUTEST misst diesen Schritt nicht – am Gerät den Ablauf prüfen (Start mit ↵).'), { status: 504, code: 'TIMEOUT' });
+      await sleep(readEveryMs);
+    }
+  }
+
+  /** Laufendes Mitlesen beenden (neue Anfrage an das Gerät, Automatik angehalten, Seite geschlossen); gibt die neue Kennung zurück */
+  cancelDeviceAwait() {
+    this._awaitSeq = (this._awaitSeq || 0) + 1;
+    return this._awaitSeq;
+  }
+
+  /**
+   * Funktionstest (PC-gesteuert): Den führt der Prüfer am SECUTEST durch – nur die Fernsteuerung abschalten
+   * (sonst sperrt das Gerät seine Tasten). Das Gerät steht danach am Anfang seines Prüfprogramms; ohne
+   * Umweg über den Gerät-Ablauf kommt der Funktionstest im Modus „gerätegeführt“ von selbst.
+   * (Am Gerät gemessen: vor Taste 14 meldet das Programm FUNCTION-TEST keine Werte; ^C beendet einen Funktionstest nicht.)
    */
   async releaseForFunctionTest() {
     const d = this.driver;
@@ -349,8 +390,7 @@ class SecutestManager {
       return { started: true };
     }
     if (d.remoteActive) await d.setRemote(false);
-    await d.setSwitch('FUNCTION-TEST');
-    return { started: false, manual: true, message: 'SECUTEST steht auf FUNCTION-TEST – sobald die Lampe (15) blinkt, mit Taste 14 starten.' };
+    return { started: false, manual: true, message: 'Fernsteuerung aus – Funktionstest bitte am SECUTEST einstellen und durchführen.' };
   }
 
   /** confirm: Werte zum Übernehmen (zweimal gleich gelesen), sonst Live-Werte inkl. Anzeigewert */

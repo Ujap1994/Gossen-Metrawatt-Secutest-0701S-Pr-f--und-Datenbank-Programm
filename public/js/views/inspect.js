@@ -63,7 +63,7 @@ onSecutest((type) => {
 });
 
 const MODE_INFO = {
-  'secutest-geraet': { icon: '📟', title: 'SECUTEST – gerätegeführt (empfohlen)', desc: 'Du bedienst das SECUTEST wie gewohnt (Bedienerführung im Display). Das Programm zeigt passend dazu die Grafiken und Live-Werte und übernimmt am Ende alle Messwerte per RS-232 (PRO?).' },
+  'secutest-geraet': { icon: '📟', title: 'SECUTEST – gerätegeführt (empfohlen)', desc: 'Das SECUTEST führt durch seinen eigenen Prüfablauf (z. B. SK II: R_ISO → Ableitstrom → Funktionstest). Mit Automatik drückt das Programm Start/↵, liest die Werte mit und schaltet weiter; den Funktionstest machst du am Gerät. Am Ende übernimmt es das Protokoll des SECUTEST (PRO?).' },
   'secutest-pc': { icon: '💻', title: 'SECUTEST – PC-gesteuert', desc: 'Das Programm startet jede Messung selbst per Schnittstellenbefehl (MES!/WER?) und liest die Werte. Ideal, um jeden Schritt einzeln zu steuern.' },
   manuell: { icon: '✍️', title: 'Manuell – ohne SECUTEST-Verbindung', desc: 'Messwerte vom Display (oder einem anderen Prüfgerät) von Hand eintragen. Bewertung erfolgt trotzdem automatisch.' },
 };
@@ -279,7 +279,7 @@ async function renderSetup(deviceId, navigate) {
         saved: null,
         remoteActive: false,
         prefilled: false,
-        auto: cfg.mode === 'secutest-pc', // Automatik: messen, eintragen, weiterschalten
+        auto: cfg.mode !== 'manuell', // Automatik: messen bzw. mitlesen, eintragen, weiterschalten
       };
       if (tpl) {
         W.inspector = tpl.inspector || W.inspector;
@@ -380,7 +380,7 @@ function stepView(navigate, redraw) {
 
   const panel = h('div', { class: 'card stack' });
   add(panel, 
-    h('div', { class: 'row between' }, h('h2', { style: { margin: 0 } }, `${W.stepIdx + 1}. ${step.title}`), h('div', { class: 'row' }, W.cfg.mode === 'secutest-pc' ? h('button', { class: `btn sm ${W.auto ? 'ok' : ''}`, title: 'Automatik: Messungen starten, Werte eintragen und weiterschalten', onclick: () => ((W.auto = !W.auto), redraw()) }, W.auto ? '⚙ Automatik an' : '⚙ Automatik aus') : null, h('span', { class: 'badge info' }, MODE_INFO[W.cfg.mode].icon + ' ' + (W.cfg.mode === 'manuell' ? 'manuell' : W.cfg.mode === 'secutest-pc' ? 'PC-gesteuert' : 'gerätegeführt')))),
+    h('div', { class: 'row between' }, h('h2', { style: { margin: 0 } }, `${W.stepIdx + 1}. ${step.title}`), h('div', { class: 'row' }, W.cfg.mode !== 'manuell' ? h('button', { class: `btn sm ${W.auto ? 'ok' : ''}`, title: 'Automatik: Messungen starten bzw. mitlesen, Werte eintragen und weiterschalten', onclick: () => ((W.auto = !W.auto), redraw()) }, W.auto ? '⚙ Automatik an' : '⚙ Automatik aus') : null, h('span', { class: 'badge info' }, MODE_INFO[W.cfg.mode].icon + ' ' + (W.cfg.mode === 'manuell' ? 'manuell' : W.cfg.mode === 'secutest-pc' ? 'PC-gesteuert' : 'gerätegeführt')))),
     step.instructions?.length ? h('ol', { class: 'instr' }, step.instructions.map((t) => h('li', {}, t))) : null,
     (step.hints || []).map((t) => h('div', { class: 'hint' }, '💡 ', t))
   );
@@ -456,11 +456,9 @@ function prepPanel(step, body, redraw, next) {
         class: 'btn primary',
         onclick: async () => {
           try {
-            // steht z. B. nach dem letzten Funktionstest noch auf FUNCTION-TEST: erst das Prüfprogramm wählen
             if (W.auto) {
               clear(out).appendChild(h('div', { class: 'muted' }, `Stelle SECUTEST auf „${sw}“ …`));
               await post('/secutest/switch', { position: sw });
-              W.ftProgram = false;
             }
             clear(out).appendChild(h('div', { class: 'muted' }, 'Prüfe Anschluss …'));
             const r = await post('/secutest/precheck');
@@ -486,6 +484,26 @@ function prepPanel(step, body, redraw, next) {
       }, W.auto ? '▶ Automatische Prüfung starten' : '🔍 Anschlusskontrolle durchführen')
     );
   } else {
+    if (W.auto) {
+      body.appendChild(
+        h('button', {
+          class: 'btn primary',
+          onclick: async () => {
+            try {
+              clear(out).appendChild(h('div', { class: 'muted' }, `Stelle SECUTEST auf „${sw}“ …`));
+              await post('/secutest/remote/end'); // falls von einer PC-gesteuerten Prüfung noch an
+              await post('/secutest/switch', { position: sw });
+              W.deviceRunning = false;
+              W.pendingEnter = false;
+              fill(out, h('div', { class: 'alert ok small' }, `⚙ SECUTEST steht auf „${sw}“ – weiter zur Sichtprüfung …`));
+              later(1500, next);
+            } catch (e) {
+              clear(out).appendChild(h('div', { class: 'alert bad' }, e.message));
+            }
+          },
+        }, '▶ Automatische Prüfung starten')
+      );
+    }
     const live = h('div');
     add(body, h('h3', {}, 'Live vom SECUTEST'), live, keypad);
     every(2000, async () => {
@@ -548,13 +566,6 @@ function takeValues(step, values, pointIdx) {
     }
     if (v && v.value != null) p.values[q.key] = { ...v, source: 'secutest' };
   }
-}
-
-/** Steht der SECUTEST nach dem Funktionstest noch auf FUNCTION-TEST: vor einer Messung zurück aufs Prüfprogramm */
-async function ensureTestProgram() {
-  if (!W.ftProgram) return;
-  await post('/secutest/switch', { position: W.proc.switchPos });
-  W.ftProgram = false;
 }
 
 /** Zweimal gleich gelesene Werte übernehmen (vertauschte Zeichen erkennt die Prüfsumme des Geräts nicht) */
@@ -633,7 +644,6 @@ function measurePanel(step, body, redraw, next) {
       class: 'btn primary',
       onclick: async () => {
         try {
-          await ensureTestProgram();
           await post('/secutest/remote/start', { group });
           W.remoteActive = true;
           running = true;
@@ -672,7 +682,8 @@ function measurePanel(step, body, redraw, next) {
     } }, '✓ Wert übernehmen'));
     if (W.auto) autoMeasureStep(step, { body, liveBox, drawPoints, next, redraw });
   } else if (W.cfg.mode === 'secutest-geraet' && step.deviceGroup) {
-    every(1500, async () => {
+    if (W.auto) autoDeviceStep(step, { body, liveBox, drawPoints, next, redraw });
+    else every(1500, async () => {
       try {
         const r = await get('/secutest/live');
         if (r.group) {
@@ -707,6 +718,122 @@ function measurePanel(step, body, redraw, next) {
   add(body, ctrl, statusLine, liveBox, ptsBox, disp, skip);
 }
 
+/** Messwert mit Einheit für Hinweise (Minimum, Maximum, Anzeige) */
+function shownValue(k, v) {
+  const q = state.meta.quantities;
+  const unit = q[k]?.unit ?? q[k.replace(/_(MIN|MAX|LIVE)$/, '')]?.unit ?? '';
+  return v ? `${valText(v)} ${unit}` : '–';
+}
+
+/** Hinweis bei Unruhe während der Messung (gehaltenes Minimum/Maximum weit weg von der ruhigen Anzeige) */
+function transientNote(group, r) {
+  const [hk, lk] = group === 'RISO' ? ['RISO_MIN', 'RISO_LIVE'] : [`${group}_MAX`, `${group}_LIVE`];
+  const kind = group === 'RISO' ? 'Minimum' : 'Maximum';
+  return [h('b', {}, '⚠ Der Messwert war unruhig'), ` (${kind} ${shownValue(hk, r.values[hk])}, Anzeige zuletzt ${shownValue(lk, r.live[lk])}) – wurde der Prüfling berührt? Der übernommene Wert hängt am ${kind} und wäre verfälscht. `];
+}
+
+/**
+ * Gerätegeführt mit Automatik: Das SECUTEST fährt seinen eigenen Ablauf (SK II: R_ISO → Ableitstrom →
+ * Funktionstest). Das Programm drückt Start bzw. ↵, liest mit und trägt den stabilen Wert ein. Vor jedem
+ * Übergang in eine Messung mit Prüfspannung bestätigt der Prüfer einmal „Hände weg“ (bei SK I hält er
+ * davor bei R_SL die Sonde). Nimmt das Gerät den Tastendruck über die Schnittstelle nicht an, bittet das
+ * Programm den Prüfer darum und liest trotzdem mit.
+ */
+function autoDeviceStep(step, { body, liveBox, drawPoints, next, redraw }) {
+  const pts = ensurePoint(step);
+  if (pts[pts.length - 1].values[step.key]?.value != null || W.skipped[step.id]) return; // schon gemessen
+  const banner = h('div', { class: 'alert info' });
+  body.prepend(banner);
+  const idx = W.stepIdx;
+  const group = remoteGroupOf(step); // I_B: am Gerät ein I_EA-Schritt, Werte aber als I_B
+  const alive = () => W && W.stepIdx === idx && W.auto && document.body.contains(banner);
+  const pause = h('button', { class: 'btn sm', onclick: () => ((W.auto = false), redraw()) }, '⏸ Automatik anhalten');
+  if (step.optional) {
+    // nicht Teil des Geräteablaufs (z. B. I_B bei SK I)
+    fill(banner, '⚙ Dieser Schritt gehört nicht zum Ablauf des SECUTEST – bei Bedarf von Hand messen, sonst geht es in 3 s weiter. ', pause);
+    return later(3000, () => alive() && next());
+  }
+  const press = async (label) => {
+    try {
+      await post('/secutest/key', { key: 'ENTER' });
+    } catch {
+      toast(`Bitte am SECUTEST ${label} drücken`, 'warn', 10000);
+    }
+  };
+  const watch = async () => {
+    banner.className = 'alert info';
+    fill(banner, h('b', {}, '⏱ SECUTEST misst – Prüfling nicht berühren!'), ' Der Wert wird übernommen, sobald er stabil ist. ', pause);
+    // Live-Werte schickt der Server beim Mitlesen – kein zusätzliches Abfragen
+    let measuring = false;
+    const unsub = onSecutest((type, data) => {
+      if (type !== 'measure' || data.group !== group || !document.body.contains(liveBox)) return;
+      measuring = true;
+      drawLive(liveBox, data.values);
+    });
+    // Nimmt das Gerät den Tastendruck über die Schnittstelle nicht an (oder zeigt es eine Meldung): Prüfer bitten
+    later(8000, () => !measuring && alive() && fill(banner, h('b', {}, '👉 Das SECUTEST misst noch nicht.'), ' Bitte am SECUTEST ↵ drücken bzw. die angezeigte Meldung bestätigen – das Programm liest dann mit. Prüfling nicht berühren! ', pause));
+    let r;
+    try {
+      r = await post('/secutest/device/await', { group });
+    } catch (e) {
+      if (!document.body.contains(banner) || e.data?.code === 'CANCELLED') return;
+      banner.className = 'alert bad';
+      return fill(banner, `✘ ${e.message} `, h('button', { class: 'btn sm', onclick: watch }, '↻ Weiter mitlesen'));
+    } finally {
+      unsub();
+    }
+    if (!document.body.contains(banner) || W.stepIdx !== idx) return;
+    drawLive(liveBox, { ...r.live, ...r.values });
+    const proceed = () => {
+      if (!takeConfirmed(step, r)) return fill(banner, '⚙ Kein stabiler Wert – „✓ Live-Wert übernehmen“ von Hand.');
+      drawPoints();
+      W.pendingEnter = true; // am Gerät mit ↵ zum nächsten Schritt
+      const p = pts[pts.length - 1];
+      const fails = step.quantities.filter((q) => passOf(q, p.values[q.key]) === false);
+      if (fails.length) {
+        banner.className = 'alert bad';
+        return fill(banner, `✘ ${fails.map((q) => q.label).join(', ')}: Grenzwert nicht eingehalten – Automatik angehalten. Mit „Weiter“ fortsetzen oder die Prüfung am SECUTEST abbrechen (▼).`);
+      }
+      banner.className = 'alert ok';
+      let m = 3;
+      const advance = () => {
+        if (!alive()) return;
+        if (m <= 0) return next();
+        fill(banner, `✔ Messwert übernommen – weiter in ${m} s `, pause);
+        m -= 1;
+        later(1000, advance);
+      };
+      advance();
+    };
+    if (r.transient) {
+      banner.className = 'alert warn';
+      return fill(banner, ...transientNote(group, r), 'Zum Wiederholen die Prüfung am SECUTEST abbrechen (▼) und neu starten. ', h('button', { class: 'btn sm', onclick: proceed }, 'Wert trotzdem übernehmen'));
+    }
+    proceed();
+  };
+  // Gerät zum Schritt bringen: Start (erster Schritt) bzw. ↵ (nach dem vorigen Schritt)
+  const needPress = !W.deviceRunning || W.pendingEnter;
+  const begin = async () => {
+    if (needPress) {
+      const label = W.deviceRunning ? '↵' : '↵ (Start)';
+      W.deviceRunning = true;
+      W.pendingEnter = false;
+      await press(label);
+    }
+    watch();
+  };
+  if (step.key === 'RSL' && needPress) {
+    // R_SL: der Prüfer hält die Sonde an das Schutzleiter-Teil und startet selbst
+    banner.className = 'alert warn';
+    return fill(banner, h('b', {}, '👉 Sonde an das Schutzleiter-Teil halten'), ' – dann startet der SECUTEST die Messung. ', h('button', { class: 'btn sm primary', onclick: begin }, '▶ Sonde liegt an – messen'), ' ', pause);
+  }
+  if (step.key !== 'RSL' && !W.handsOff) {
+    banner.className = 'alert warn';
+    return fill(banner, h('b', {}, '⚡ Jetzt misst der SECUTEST mit Prüfspannung'), ' (R_ISO mit 500 V). Prüfling, Klemme und Sonde nicht mehr berühren – danach liest das Programm mit und schaltet selbst weiter. ', h('button', { class: 'btn sm primary', onclick: () => ((W.handsOff = true), begin()) }, '▶ Hände weg – weiter'), ' ', pause);
+  }
+  later(100, begin); // erst wenn der Schritt angezeigt wird
+}
+
 /**
  * Automatik (PC-gesteuert): Vorwarnung → Messung bis zum stabilen, zweimal gleich gelesenen Wert →
  * eintragen → bewerten → weiterschalten. Hält bei Grenzwertverletzung oder Fehler an.
@@ -721,8 +848,6 @@ function autoMeasureStep(step, { body, liveBox, drawPoints, next, redraw }) {
   const group = remoteGroupOf(step);
   const alive = () => W && W.stepIdx === idx && W.auto && document.body.contains(banner);
   const pause = h('button', { class: 'btn sm', onclick: () => ((W.auto = false), redraw()) }, '⏸ Automatik anhalten');
-  const unit = (k) => state.meta.quantities[k]?.unit ?? state.meta.quantities[k.replace(/_(MIN|MAX|LIVE)$/, '')]?.unit ?? '';
-  const shown = (k, v) => (v ? `${valText(v)} ${unit(k)}` : '–');
   let started = false;
   let running = false;
   let n = step.key === 'RSL' ? 5 : 3;
@@ -759,7 +884,6 @@ function autoMeasureStep(step, { body, liveBox, drawPoints, next, redraw }) {
     const unsub = onSecutest((type, data) => type === 'measure' && data.group === group && document.body.contains(liveBox) && drawLive(liveBox, data.values));
     let r;
     try {
-      await ensureTestProgram();
       r = await post('/secutest/remote/auto', { group, fresh });
     } catch (e) {
       if (!document.body.contains(banner)) return;
@@ -774,9 +898,8 @@ function autoMeasureStep(step, { body, liveBox, drawPoints, next, redraw }) {
     drawLive(liveBox, { ...r.live, ...r.values });
     if (r.transient) {
       // gehaltenes Minimum/Maximum weit weg von der ruhigen Anzeige: übernommener Wert wäre verfälscht
-      const [hk, lk] = group === 'RISO' ? ['RISO_MIN', 'RISO_LIVE'] : [`${group}_MAX`, `${group}_LIVE`];
       banner.className = 'alert warn';
-      return fill(banner, h('b', {}, '⚠ Der Messwert war unruhig'), ` (${group === 'RISO' ? 'Minimum' : 'Maximum'} ${shown(hk, r.values[hk])}, Anzeige zuletzt ${shown(lk, r.live[lk])}) – wurde der Prüfling berührt? Der übernommene Wert hängt am ${group === 'RISO' ? 'Minimum' : 'Maximum'} und wäre verfälscht. `, h('button', { class: 'btn sm primary', onclick: () => measure(true) }, '↻ Messung wiederholen'), ' ', h('button', { class: 'btn sm', onclick: () => finish(r) }, 'Wert trotzdem übernehmen'));
+      return fill(banner, ...transientNote(group, r), h('button', { class: 'btn sm primary', onclick: () => measure(true) }, '↻ Messung wiederholen'), ' ', h('button', { class: 'btn sm', onclick: () => finish(r) }, 'Wert trotzdem übernehmen'));
     }
     finish(r);
   };
@@ -868,33 +991,39 @@ function measurePanelFT(step, body, redraw) {
     const read = async () => {
       try {
         const r = W.cfg.mode === 'secutest-pc' ? await get('/secutest/remote/read?group=FT') : await get('/secutest/live');
-        lastLive = r.values || {};
-        const any = Object.values(lastLive).some((v) => v.value != null);
-        // „bereit“ meldet das Gerät nicht (vor Taste 14 keine Werte) – „läuft“ zeigt der Energiezähler
-        statusLine.textContent = r.ftActive || (r.ftActive == null && any)
+        // „bereit“ meldet das Gerät nicht (vor Taste 14 keine Werte) – „läuft“ zeigt der Energiezähler; gerätegeführt
+        // kann direkt nach dem Wechsel noch der vorige Messschritt laufen: dessen Werte nicht anzeigen
+        lastLive = r.ftActive ? r.values || {} : {};
+        statusLine.textContent = r.ftActive
           ? '⏱ Funktionstest läuft – „📥 Werte vom SECUTEST übernehmen“, solange er läuft.'
-          : 'Funktionstest läuft noch nicht – am SECUTEST die Meldung mit ↵ bestätigen, dann sobald die Lampe (15) blinkt mit Taste FUNCTION-TEST (14) starten.';
+          : W.cfg.mode === 'secutest-geraet'
+            ? 'Funktionstest läuft noch nicht – am SECUTEST die Meldung „Prüfling ausschalten“ mit ↵ bestätigen, dann sobald die Lampe (15) blinkt mit Taste FUNCTION-TEST (14) starten.'
+            : 'Funktionstest läuft noch nicht – am SECUTEST einstellen und, sobald die Lampe (15) blinkt, mit Taste FUNCTION-TEST (14) starten.';
         drawLive(liveBox, lastLive);
       } catch (e) {
         statusLine.textContent = `⚠ ${e.message}`;
       }
     };
     if (W.cfg.mode === 'secutest-pc') {
-      // Den Funktionstest macht der Prüfer am Gerät. Das Programm stellt ihn einmal auf FUNCTION-TEST und gibt die
-      // Tasten frei (nur Fernsteuerung aus brächte das Gerät an den Anfang seines Prüfprogramms zurück).
+      // Den Funktionstest macht der Prüfer am Gerät – das Programm gibt nur die Tasten frei (Fernsteuerung aus,
+      // das Gerät steht dann am Anfang seines Prüfprogramms). Kein Umstellen per Schnittstelle.
+      body.prepend(h('div', { class: 'alert info' }, h('b', {}, '👉 Funktionstest bitte am SECUTEST einstellen und durchführen.'), ' Die Fernsteuerung ist aus, alle Tasten sind frei. Solange er läuft: „📥 Werte vom SECUTEST übernehmen“. Den Funktionstest im Ablauf des SECUTEST (ohne Umstellen) gibt es im Modus „gerätegeführt“.'));
+      if (W.remoteActive) post('/secutest/remote/end').then(() => (W.remoteActive = false), (e) => toast(e.message, 'bad'));
+    } else if (W.cfg.mode === 'secutest-geraet') {
+      // im Ablauf des SECUTEST folgt der Funktionstest von selbst – mit ↵ vom letzten Messschritt dorthin
+      if (W.auto && W.pendingEnter) {
+        W.pendingEnter = false;
+        post('/secutest/key', { key: 'ENTER' }).catch(() => toast('Bitte am SECUTEST ↵ drücken', 'warn', 10000));
+      }
       body.prepend(
         h('div', { class: 'alert info' },
-          h('b', {}, '👉 Funktionstest bitte am SECUTEST durchführen'), ' – das Programm stellt ihn auf FUNCTION-TEST und gibt alle Tasten frei:',
+          h('b', {}, '👉 Funktionstest am SECUTEST'), ' – er folgt im Ablauf des Geräts von selbst:',
           h('ol', { style: { margin: '6px 0 0', paddingLeft: '20px' } },
-            h('li', {}, 'Die Hinweismeldung am SECUTEST mit ↵ (Enter) bestätigen.'),
-            h('li', {}, 'Sobald die Lampe (15) blinkt: mit Taste FUNCTION-TEST (14) starten, Prüfling einschalten, Funktion prüfen.'),
-            h('li', {}, 'Solange er läuft: „📥 Werte vom SECUTEST übernehmen“.'),
-            h('li', {}, 'Prüfling am eigenen Schalter ausschalten, dann Taste 14 – und unten die Funktion beurteilen.')))
+            h('li', {}, 'Meldung „Prüfling ausschalten“ am SECUTEST mit ↵ bestätigen.'),
+            h('li', {}, 'Sobald die Lampe (15) blinkt: Taste FUNCTION-TEST (14), Prüfling einschalten, Funktion prüfen. Solange er läuft, bei Bedarf „📥 Werte vom SECUTEST übernehmen“.'),
+            h('li', {}, 'Prüfling am eigenen Schalter ausschalten, Taste 14, dann am SECUTEST „Funktionstest bestanden?“ beantworten – das Ergebnis holt das Programm automatisch.'),
+            h('li', {}, 'Unten die Funktion beurteilen und „Weiter“.')))
       );
-      if (!W.ftProgram) {
-        W.ftProgram = true;
-        post('/secutest/remote/start', { group: 'FT' }).then(() => (W.remoteActive = false), (e) => ((W.ftProgram = false), toast(e.message, 'bad')));
-      }
     }
     every(2000, read);
     add(ctrl, h('button', { class: 'btn ok', onclick: async () => {
@@ -916,11 +1045,11 @@ function measurePanelFT(step, body, redraw) {
 }
 
 /**
- * PC-gesteuert: Läuft am SECUTEST noch der Funktionstest (Netz an der Prüfdose), vor dem Verlassen des
- * Schritts daran erinnern – beenden muss ihn der Prüfer am Gerät. false = im Schritt bleiben.
+ * Läuft am SECUTEST noch der Funktionstest (Netz an der Prüfdose), vor dem Verlassen des Schritts daran
+ * erinnern – beenden muss ihn der Prüfer am Gerät. false = im Schritt bleiben.
  */
 async function functionTestFinished() {
-  if (!W || W.cfg.mode !== 'secutest-pc') return true;
+  if (!W || W.cfg.mode === 'manuell' || !state.secutest?.connected) return true;
   const r = await get('/secutest/remote/read?group=FT').catch(() => null);
   if (!r?.ftActive) return true;
   return confirmDialog('Der Funktionstest ist am SECUTEST noch nicht abgeschlossen – eventuell liegt noch Netzspannung an der Prüfdose. Bitte am Gerät beenden (Prüfling am eigenen Schalter ausschalten, Taste 14) und die Abfrage am Gerät beantworten. Trotzdem weiter?', { title: 'Funktionstest noch aktiv', confirmLabel: 'Trotzdem weiter' });

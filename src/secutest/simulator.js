@@ -131,6 +131,7 @@ class SimulatedSecutest extends EventEmitter {
   }
 
   _abort() {
+    this._ftDone = false;
     this.held = {};
     this.running = [];
     this.sequence = null;
@@ -284,28 +285,45 @@ class SimulatedSecutest extends EventEmitter {
     }
   }
 
+  /**
+   * Taste ↵ im gerätegeführten Ablauf – wie am echten SECUTEST S: Start → Messschritt läuft, bis ↵ gedrückt
+   * wird → nächster Schritt … → Meldung „Prüfling ausschalten“ (↵) → Funktionstest (Taste 14 = TAS!5) →
+   * Frage „Funktionstest bestanden?“ (↵ = ja) → „Protokoll fertig“ (PRF).
+   * Mit stepMs (nur Tests) laufen die Messschritte wie früher selbst weiter, ohne Funktionstest.
+   */
   _enterPressed() {
     if (this.remote) return;
-    if (this.sequence && this.sequence.done) {
+    const seq = this.sequence;
+    if (seq && seq.done) {
       this.sequence = null; // „neue Prüfung“
       return;
     }
-    if (this.sequence) return;
-    const steps = this._sequenceSteps();
-    if (!steps.length) return;
-    this.values = {};
-    this.sequence = { steps, idx: 0, done: false };
-    this._runSequenceStep();
+    if (!seq) {
+      const steps = this._sequenceSteps();
+      if (!steps.length) return;
+      this.values = {};
+      this._ftDone = false;
+      this.sequence = { steps, idx: 0, done: false, phase: 'measure' };
+      this._runSequenceStep();
+      return;
+    }
+    if (this.stepMs != null) return;
+    if (seq.phase === 'measure') {
+      seq.idx += 1;
+      this._runSequenceStep();
+    } else if (seq.phase === 'switch-off') this._startFunctionTestPhase();
+    else if (seq.phase === 'question') this._finishSequence();
   }
 
   _runSequenceStep() {
     const seq = this.sequence;
     if (!seq) return;
     if (seq.idx >= seq.steps.length) {
-      seq.done = true;
-      this.running = [];
-      this.lastProtocol = this._buildProtocol();
-      this._send(`PRF${this.address ?? ''}`); // wie das echte Gerät: „Protokoll fertig“
+      if (this.stepMs != null) return this._finishSequence();
+      // Meldung „Prüfling ausschalten“ – nach ↵ (oder nach einigen Sekunden) Funktionstest
+      seq.phase = 'switch-off';
+      this.running = [115];
+      this.timers.push(setTimeout(() => this.sequence === seq && seq.phase === 'switch-off' && this._startFunctionTestPhase(), 5000));
       return;
     }
     const st = seq.steps[seq.idx];
@@ -313,12 +331,27 @@ class SimulatedSecutest extends EventEmitter {
     this.held = {};
     this.heldGroup = null;
     this._gen(st.m);
-    const dur = this.stepMs ?? (st.m === 8 ? 4000 : 2500);
+    if (this.stepMs == null) return; // wartet auf ↵
     const t = setTimeout(() => {
       seq.idx += 1;
       this._runSequenceStep();
-    }, dur);
+    }, this.stepMs);
     this.timers.push(t);
+  }
+
+  _startFunctionTestPhase() {
+    this.sequence.phase = 'ft';
+    this.running = [64, 48, 56];
+  }
+
+  _finishSequence() {
+    const seq = this.sequence;
+    seq.done = true;
+    seq.phase = 'done';
+    this.running = [];
+    this.lastProtocol = this._buildProtocol();
+    this._clearFunctionTest();
+    this._send(`PRF${this.address ?? ''}`); // wie das echte Gerät: „Protokoll fertig“
   }
 
   _buildProtocol() {
@@ -355,6 +388,11 @@ class SimulatedSecutest extends EventEmitter {
     if (v[72] != null) {
       BB |= 16;
       vals.push(v[72].toFixed(1), '<50.0', (v[73] || 0).toFixed(1), '<120.0');
+    }
+    if (this._ftDone && v[67] != null) {
+      BB |= 32; // Differenzstrom aus dem Funktionstest
+      vals.push(v[67].toFixed(2).padStart(5, '0'), '<03.50');
+      if (v[67] > 3.5) EE |= 32;
     }
     if (s.sk === 'SK I') CC |= 1;
     if (s.sk === 'SK III') CC |= 2;
@@ -436,11 +474,18 @@ class SimulatedSecutest extends EventEmitter {
       else if (t === 'r') this.remote = false;
       else if (t === '4') this._enterPressed();
       else if (t === '5') {
+        const seq = this.sequence;
+        const inSequence = seq && (seq.phase === 'ft' || seq.phase === 'question');
         this.mainsOn = !this.mainsOn;
-        this.running = this.mainsOn ? [56, 64] : [];
+        this.running = inSequence ? [64, 48, 56] : this.mainsOn ? [56, 64] : [];
         if (this.mainsOn) {
           this._energy = 0;
           this._gen('FT');
+          if (inSequence) seq.phase = 'ft';
+        } else if (inSequence) {
+          // wie am Gerät: Werte bleiben stehen, bis die Frage „bestanden?“ beantwortet ist
+          seq.phase = 'question';
+          this._ftDone = true;
         } else this._clearFunctionTest();
       } else if (!/^[0-3Mm]$/.test(t)) {
         this._ack(false);
