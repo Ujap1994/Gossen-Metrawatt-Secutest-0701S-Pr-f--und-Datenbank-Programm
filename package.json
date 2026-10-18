@@ -178,6 +178,56 @@
           "Comment": "Prüf- und Datenbankprogramm für den SECUTEST 0701S"
         }
       }
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0 | libgtk-3-0t64",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0 | libatspi2.0-0t64",
+        "libuuid1",
+        "libsecret-1-0",
+        "libgbm1",
+        "libasound2 | libasound2t64",
+        "libcups2 | libcups2t64",
+        "libudev1"
+      ]
+    },
+    "rpm": {
+      "depends": [
+        "gtk3",
+        "libnotify",
+        "nss",
+        "libXScrnSaver",
+        "(libXtst or libXtst6)",
+        "xdg-utils",
+        "at-spi2-core",
+        "(libuuid or libuuid1)",
+        "(mesa-libgbm or libgbm1)",
+        "(alsa-lib or libasound2)",
+        "(cups-libs or libcups2)",
+        "(systemd-libs or libudev1)"
+      ]
+    },
+    "pacman": {
+      "depends": [
+        "gtk3",
+        "nss",
+        "libxss",
+        "libxtst",
+        "libnotify",
+        "libsecret",
+        "xdg-utils",
+        "at-spi2-core",
+        "libxkbcommon",
+        "mesa",
+        "alsa-lib",
+        "libcups",
+        "systemd-libs"
+      ]
     }
   }
 }
