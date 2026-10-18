@@ -9,7 +9,7 @@
  * mit 1:1-Kabel bzw. – je nach Adapter – Nullmodemkabel.
  */
 const { EventEmitter } = require('events');
-const { CTRL, KEYS, SWITCH_POSITIONS, buildCommand, parseLine, parseWer, parseMes, parseIdn, parsePro } = require('./protocol');
+const { CTRL, KEYS, SWITCH_POSITIONS, buildCommand, cleanLine, parseLine, parseWer, parseMes, parseIdn, parsePro } = require('./protocol');
 const { SimulatedSecutest } = require('./simulator');
 
 let SerialPortCtor = null;
@@ -55,7 +55,9 @@ class SecutestDriver extends EventEmitter {
       address: null,
       withChecksum: true,
       timeoutMs: 2500,
-      settleMs: 60,
+      // Mindestabstand zwischen zwei Befehlen: Die Firmware verkraftet nur wenige Abfragen pro Sekunde
+      // (bei etwa 5/s bricht der SECUTEST S die Messung ab bzw. startet neu – am Gerät gemessen)
+      settleMs: 250,
       switchPositions: { ...SWITCH_POSITIONS },
       ...options,
     };
@@ -68,6 +70,8 @@ class SecutestDriver extends EventEmitter {
     this.pending = null;
     this.identity = null;
     this.logBuffer = [];
+    this.timeoutsInRow = 0;
+    this.responding = true;
   }
 
   // -------------------------------------------------------------------------
@@ -92,6 +96,8 @@ class SecutestDriver extends EventEmitter {
     this.port.on('close', () => this._onClose());
     this.port.on('error', (e) => this._log('err', e.message));
     this.connected = true;
+    this.timeoutsInRow = 0;
+    this.responding = true;
     this._log('info', `Verbunden mit ${this.portPath}`);
     // Echo aus (Rechnersteuerung)
     await this._writeRaw(CTRL.ECHO_OFF);
@@ -136,7 +142,7 @@ class SecutestDriver extends EventEmitter {
   }
 
   status() {
-    return { connected: this.connected, port: this.portPath, simulator: !!this.simulator, scenario: this.simulator?.scenarioName || null, identity: this.identity, remote: !!this.remoteActive, queue: this.queue.length };
+    return { connected: this.connected, responding: this.responding, port: this.portPath, simulator: !!this.simulator, scenario: this.simulator?.scenarioName || null, identity: this.identity, remote: !!this.remoteActive, queue: this.queue.length };
   }
 
   // -------------------------------------------------------------------------
@@ -162,8 +168,7 @@ class SecutestDriver extends EventEmitter {
     while ((idx = this.rxBuffer.search(/[\r\n]/)) >= 0) {
       const line = this.rxBuffer.slice(0, idx);
       this.rxBuffer = this.rxBuffer.slice(idx + 1);
-      // Das Gerät sendet nach jeder Antwort "\r\n>" XON (nach TAS!r noch ^C) ohne Zeilenende – das landet vor der nächsten Zeile
-      const trimmed = line.replace(/[\x00-\x1f]/g, '').trim().replace(/^>+\s*/, '');
+      const trimmed = cleanLine(line);
       if (!trimmed) continue;
       this._handleLine(trimmed);
     }
@@ -187,7 +192,15 @@ class SecutestDriver extends EventEmitter {
     // vertauschte Zeichen (am Gerät beobachtet: „WRETE“, „0A“ statt „A0“) nicht – daher zusätzlich p.validate.
     if (parsed.checksumOk === false) return this._garbled(new SecutestError('CHECKSUM', `Antwort auf „${p.command}“ mit falscher Prüfsumme verworfen.`));
     if (parsed.type === 'unknown') {
-      if (text === p.frame.replace(/\r/g, '')) return; // Echo des eigenen Befehls
+      if (text === p.frame.replace(/\r/g, '')) {
+        // Echo des eigenen Befehls: Nach einem Neustart hat das Gerät das Echo wieder an – abschalten
+        if (Date.now() - (this._echoOffAt || 0) > 2000) {
+          this._echoOffAt = Date.now();
+          this._log('warn', 'SECUTEST sendet Echo (nach Neustart?) – Echo wieder ausgeschaltet');
+          this._writeRaw(CTRL.ECHO_OFF).catch(() => {});
+        }
+        return;
+      }
       return this._garbled(new SecutestError('GARBLED', `Unverständliche Antwort auf „${p.command}“ verworfen.`));
     }
     if (parsed.type === 'error') {
@@ -224,19 +237,41 @@ class SecutestDriver extends EventEmitter {
     const p = this.pending;
     this.pending = null;
     clearTimeout(p.timer);
+    this._setResponding(true);
+    this._lastDoneAt = Date.now();
     p.resolve(v);
-    setTimeout(() => this._next(), this.opts.settleMs);
+    this._next();
+  }
+
+  /** Antwortet das Gerät nicht mehr (z. B. aus- und wieder eingeschaltet), Echo erneut abschalten */
+  _onTimeout() {
+    this.timeoutsInRow += 1;
+    if (this.timeoutsInRow >= 2) {
+      this._setResponding(false);
+      this._writeRaw(CTRL.ECHO_OFF).catch(() => {});
+    }
+  }
+
+  _setResponding(on) {
+    if (on) this.timeoutsInRow = 0;
+    if (this.responding === on) return;
+    this.responding = on;
+    this._log(on ? 'info' : 'warn', on ? 'SECUTEST antwortet wieder' : 'SECUTEST antwortet nicht – eingeschaltet und Kabel gesteckt?');
+    this.emit('state', this.status());
   }
 
   _reject(err) {
     const p = this.pending;
     this.pending = null;
     clearTimeout(p.timer);
+    this._lastDoneAt = Date.now();
     p.reject(err);
-    setTimeout(() => this._next(), this.opts.settleMs);
+    this._next();
   }
 
   _failAll(err) {
+    clearTimeout(this._nextTimer);
+    this._nextTimer = null;
     if (this.pending) {
       clearTimeout(this.pending.timer);
       this.pending.reject(err);
@@ -245,8 +280,17 @@ class SecutestDriver extends EventEmitter {
     while (this.queue.length) this.queue.shift().reject(err);
   }
 
+  /** nächsten Befehl senden – frühestens settleMs nach der letzten Antwort (auch wenn der Aufrufer erst danach sendet) */
   _next() {
-    if (this.pending || !this.queue.length) return;
+    if (this.pending || !this.queue.length || this._nextTimer) return;
+    const wait = this.opts.settleMs - (Date.now() - (this._lastDoneAt || 0));
+    if (wait > 0) {
+      this._nextTimer = setTimeout(() => {
+        this._nextTimer = null;
+        this._next();
+      }, wait);
+      return;
+    }
     const job = this.queue.shift();
     this.pending = job;
     this._transmit(job);
@@ -256,7 +300,9 @@ class SecutestDriver extends EventEmitter {
     job.frame = buildCommand(job.command, { address: this.opts.address, withChecksum: job.withChecksum ?? this.opts.withChecksum });
     this._log('tx', job.frame.replace(/\r/g, ''));
     job.timer = setTimeout(() => {
-      if (this.pending === job) this._reject(new SecutestError('TIMEOUT', `Keine Antwort auf „${job.command}“ (Timeout ${job.timeout} ms).`));
+      if (this.pending !== job) return;
+      this._onTimeout();
+      this._reject(new SecutestError('TIMEOUT', `Keine Antwort auf „${job.command}“ (Timeout ${job.timeout} ms).`));
     }, job.timeout);
     this._writeRaw(job.frame).catch((e) => this.pending === job && this._reject(e));
   }
@@ -269,10 +315,14 @@ class SecutestDriver extends EventEmitter {
     if (!this.connected) return Promise.reject(new SecutestError('NOT_CONNECTED', 'Nicht mit dem SECUTEST verbunden.'));
     const cmd = String(command).trim();
     const exp = expect || (cmd.includes('?') ? 'answer' : 'ack');
-    return new Promise((resolve, reject) => {
-      this.queue.push({ command: cmd, expect: exp, timeout: timeout || this.opts.timeoutMs, withChecksum, validate, resolve, reject });
-      this._next();
-    });
+    // dieselbe Abfrage wartet schon (mehrere Live-Anzeigen fragen ab): mitbenutzen statt die Warteschlange aufzustauen
+    const waiting = exp === 'answer' && this.queue.find((j) => j.command === cmd && j.expect === exp);
+    if (waiting) return waiting.promise;
+    const job = { command: cmd, expect: exp, timeout: timeout || this.opts.timeoutMs, withChecksum, validate };
+    job.promise = new Promise((resolve, reject) => Object.assign(job, { resolve, reject }));
+    this.queue.push(job);
+    this._next();
+    return job.promise;
   }
 
   /** So lange lesen, bis zwei Antworten nacheinander übereinstimmen (gegen vertauschte Zeichen) */

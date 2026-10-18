@@ -12,6 +12,7 @@ export async function renderSecutest() {
   const term = h('div', { class: 'term' });
   const liveBox = h('div');
   let liveTimer = null;
+  let liveRun = 0; // je Einschalten eine Schleife
 
   const drawStatus = () => {
     const id = st.identity;
@@ -107,17 +108,20 @@ export async function renderSecutest() {
   const liveToggle = h('input', {
     type: 'checkbox',
     onchange: (e) => {
-      clearInterval(liveTimer);
-      if (e.target.checked)
-        liveTimer = setInterval(async () => {
-          if (!document.body.contains(liveBox)) return clearInterval(liveTimer);
-          try {
-            const r = await get('/secutest/live');
-            fill(liveBox, h('div', {}, '🔌 ', r.flags.list.join(' · ') || 'kein Prüfling erkannt'), h('div', {}, 'Laufende Messung: ', h('b', {}, r.group || '—'), r.running.length ? ` (Nr. ${r.running.join(', ')})` : ''), h('div', { class: 'live' }, Object.entries(r.values).map(([k, v]) => h('div', { class: 'lv' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v.text)))));
-          } catch (err) {
-            clear(liveBox).appendChild(h('div', { class: 'muted' }, err.message));
-          }
-        }, 900);
+      clearTimeout(liveTimer);
+      const run = ++liveRun;
+      // nächste Abfrage erst nach der vorigen (sonst stauen sie sich beim Gerät)
+      const poll = async () => {
+        if (run !== liveRun || !liveToggle.checked || !document.body.contains(liveBox)) return;
+        try {
+          const r = await get('/secutest/live');
+          fill(liveBox, h('div', {}, '🔌 ', r.flags.list.join(' · ') || 'kein Prüfling erkannt'), h('div', {}, 'Laufende Messung: ', h('b', {}, r.group || '—'), r.running.length ? ` (Nr. ${r.running.join(', ')})` : ''), h('div', { class: 'live' }, Object.entries(r.values).map(([k, v]) => h('div', { class: 'lv' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v.text)))));
+        } catch (err) {
+          clear(liveBox).appendChild(h('div', { class: 'muted' }, err.message));
+        }
+        if (run === liveRun) liveTimer = setTimeout(poll, 1500); // das Gerät verkraftet nur wenige Abfragen pro Sekunde
+      };
+      if (e.target.checked) poll();
     },
   });
 

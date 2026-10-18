@@ -134,6 +134,12 @@ module.exports = function secutestRoutes(manager) {
     res.json(await manager.remoteStart(String(req.body?.group || ''), { second: !!req.body?.second }));
   });
 
+  // Automatik: starten, stabilen Wert abwarten, zweimal gleich gelesen zurückgeben
+  r.post('/remote/auto', async (req, res) => {
+    need();
+    res.json(await manager.autoMeasure(String(req.body?.group || '')));
+  });
+
   r.get('/remote/read', async (req, res) => {
     need();
     res.json(await manager.remoteRead(String(req.query.group || ''), { confirm: req.query.confirm === '1' }));

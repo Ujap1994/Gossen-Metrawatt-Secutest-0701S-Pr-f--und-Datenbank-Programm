@@ -188,7 +188,26 @@ function writeLaunchers(dir, target, contentDir) {
   } else if (t.platform === 'darwin') {
     // .app-Bundle (Doppelklick, ohne Terminal) …
     const appExe = path.join(contentDir, '..', 'MacOS', 'secutest-pruefmanager');
-    write(appExe, `#!/bin/sh\n# ${APP_NAME} – startet den lokalen Server und öffnet den Browser\nRES="$(cd "$(dirname "$0")/../Resources" && pwd)"\n${MAC_NODE_SELECT}\nexec "$NODE" "$RES/app/src/server.js" "$@"\n`, 0o755);
+    // Der Server läuft als eigener Hintergrundprozess, das Startprogramm endet sofort: Bliebe es bestehen,
+    // hielte macOS die App für „geöffnet“, und ein erneuter Doppelklick (z. B. nach dem Schließen des
+    // Browser-Tabs) bewirkte gar nichts. So öffnet jeder Doppelklick die Oberfläche (Einzelinstanz in server.js).
+    write(
+      appExe,
+      `#!/bin/sh
+# ${APP_NAME} – startet den lokalen Server im Hintergrund und öffnet den Browser
+RES="$(cd "$(dirname "$0")/../Resources" && pwd)"
+${MAC_NODE_SELECT}
+LOGDIR="$HOME/Library/Logs/Secutest Pruefmanager"
+mkdir -p "$LOGDIR"
+LOG="$LOGDIR/server.log"
+if [ -f "$LOG" ] && [ "$(wc -c <"$LOG")" -gt 2000000 ]; then mv -f "$LOG" "$LOG.1"; fi
+echo "--- Start $(date '+%Y-%m-%d %H:%M:%S')" >>"$LOG"
+cd "$RES/app" || exit 1
+nohup "$NODE" "$RES/app/src/server.js" "$@" >>"$LOG" 2>&1 </dev/null &
+exit 0
+`,
+      0o755
+    );
     write(path.join(contentDir, '..', 'Info.plist'), infoPlist());
     write(path.join(contentDir, 'AppIcon.icns'), makeIcns());
     // … und .command-Dateien (mit Terminalfenster und Log-Ausgabe)

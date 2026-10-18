@@ -29,6 +29,7 @@ function toQuantityUnit(key, v) {
 const ftActive = (values) => values.W?.value != null;
 // nach dem Ende des Funktionstests zeigen I und P nur noch den Leerlauf – das Gerät hält die Maximalwerte
 const FT_HELD = { P: 'P_MAX', I: 'I_MAX' };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const DEFAULT_SECUTEST_CFG = {
   address: null,
@@ -39,6 +40,7 @@ const DEFAULT_SECUTEST_CFG = {
   autoConnect: true, // eingesteckten Adapter automatisch anpingen und verbinden
   terminal: true, // RS-232-Terminal (freie Befehle) auf der SECUTEST-Seite anzeigen – in den Einstellungen abschaltbar
   lastPort: '',
+  debugLog: false, // jede gesendete/empfangene Zeile ins Log (wie SECUTEST_DEBUG=1) – zur Fehlersuche
 };
 
 class SecutestManager {
@@ -72,13 +74,28 @@ class SecutestManager {
 
   _build() {
     this.driver = new SecutestDriver(this._driverOpts());
-    this.driver.on('log', (e) => this.broadcast('log', e));
+    this.driver.on('log', (e) => {
+      this.broadcast('log', e);
+      // ohne Terminal (macOS-App) landet das in der Logdatei – hilft bei „findet das Gerät nicht“
+      // SECUTEST_DEBUG=1 bzw. debugLog: auch jede gesendete und empfangene Zeile
+      if (this.logToConsole && (process.env.SECUTEST_DEBUG || this.cfg().debugLog || (e.dir !== 'tx' && e.dir !== 'rx'))) console.log(`${new Date().toISOString().slice(11, 23)} [SECUTEST] ${e.dir.padEnd(4)} ${e.text}`);
+    });
     this.driver.on('state', (s) => this.broadcast('state', this.status()));
     this.driver.on('device-event', (e) => this.broadcast(e.type, e));
   }
 
   // -------------------- Server-Sent Events --------------------
+  /**
+   * Nur ein Browser-Tab ist aktiv: Ein neuer Tab pausiert die älteren. Sonst steuern mehrere Tabs
+   * gleichzeitig das Gerät, und jeder offene Ereignis-Kanal belegt eine der ca. 6 Verbindungen,
+   * die ein Browser je Adresse zulässt – ab dem 6. Tab lädt dann gar nichts mehr.
+   */
   subscribe(res) {
+    for (const old of this.clients) {
+      old.write('event: superseded\ndata: {}\n\n');
+      old.end();
+    }
+    this.clients.clear();
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
     res.write(`event: state\ndata: ${JSON.stringify(this.status())}\n\n`);
     for (const e of this.driver.logBuffer.slice(-100)) res.write(`event: log\ndata: ${JSON.stringify(e)}\n\n`);
@@ -109,13 +126,16 @@ class SecutestManager {
   }
 
   async connect({ path, simulator, scenario } = {}) {
+    this.manualDisconnect = false;
     const st = await this.driver.connect({ path, simulator, scenario });
     if (!simulator && path) this.updateCfg({ lastPort: path });
     this.broadcast('state', this.status());
     return st;
   }
 
+  /** Trennen durch den Benutzer: nicht gleich wieder automatisch verbinden (erst nach erneutem Einstecken oder Suchen) */
   async disconnect() {
+    this.manualDisconnect = true;
     await this.driver.disconnect();
     this.broadcast('state', this.status());
     return this.status();
@@ -125,6 +145,7 @@ class SecutestManager {
   async autoDetect({ connect = true } = {}) {
     if (this.scanning) throw Object.assign(new Error('Suche läuft bereits'), { status: 409 });
     this.scanning = true;
+    this.manualDisconnect = false;
     this.broadcast('state', this.status());
     const wasWatching = !!this.watcher;
     if (this.watcher) this.watcher.paused = true;
@@ -133,6 +154,7 @@ class SecutestManager {
       if (this.driver.connected && !this.driver.simulator) return { found: { path: this.driver.portPath, identity: this.driver.identity }, results: [], alreadyConnected: true };
       if (this.driver.connected && this.driver.simulator) await this.driver.disconnect();
       const res = await scan({ onProgress: (p) => this.broadcast('scan', p) });
+      if (this.logToConsole && !res.found) console.log(`[SECUTEST] Automatische Suche ohne Treffer: ${res.results.map((r) => `${r.path} (${r.error || 'keine Antwort'})`).join(', ') || 'keine USB-Seriell-Adapter gefunden'}`);
       this.lastScan = { at: new Date().toISOString(), found: res.found ? res.found.path : null, tried: res.results.map((r) => ({ path: r.path, ok: r.ok, error: r.error || null, chip: r.chip })) };
       if (res.found && connect) await this.connect({ path: res.found.path });
       return res;
@@ -145,13 +167,17 @@ class SecutestManager {
 
   startWatcher() {
     if (this.watcher) return;
-    this.watcher = new PortWatcher({ intervalMs: 3000 });
-    this.watcher.on('added', (p) => this.broadcast('port-added', p));
+    this.watcher = new PortWatcher({ intervalMs: 3000, shouldProbe: () => !this.driver.connected && !this.scanning && !this.manualDisconnect && this.cfg().autoConnect });
+    this.watcher.on('added', (p) => {
+      this.manualDisconnect = false; // neu eingesteckt: wieder automatisch verbinden
+      this.broadcast('port-added', p);
+    });
     this.watcher.on('removed', (p) => {
       this.broadcast('port-removed', p);
       if (this.driver.connected && this.driver.portPath === p.path) this.driver.disconnect().catch(() => {});
     });
     this.watcher.on('found', async (r) => {
+      if (this.logToConsole) console.log(`[SECUTEST] Gefunden an ${r.path}`);
       this.broadcast('device-found', { path: r.path, identity: r.identity });
       if (!this.driver.connected && this.cfg().autoConnect) {
         try {
@@ -196,14 +222,14 @@ class SecutestManager {
     return { values, last: last || {}, unconfirmed: keys.filter((k) => !(k in values) && last?.[k]?.value != null) };
   }
 
-  /** Anzeigewert des Displays zusätzlich lesen – nur zur Anzeige, ein Fehler ist egal */
-  async _readLive(group, liveMap) {
-    if (!liveMap || !Object.keys(liveMap).length) return {};
-    try {
-      return this.mapValues(group, await this.driver.getValues(Object.values(liveMap)), liveMap);
-    } catch {
-      return {};
-    }
+  /** Hauptwerte und Anzeigewert in EINER Abfrage – das Gerät verkraftet nur wenige Abfragen pro Sekunde */
+  async _readGroup(group, liveMap) {
+    const def = REMOTE[group];
+    const extra = Object.values(liveMap || {}).filter((n) => !def.read.includes(n));
+    let wer = await this.driver.getValues([...def.read, ...extra]);
+    // „.Nx“ (Anzeigewert-Nummer kennt das Gerät nicht): nur die Hauptwerte
+    if (extra.length && !Object.keys(wer).length) wer = await this.driver.getValues(def.read);
+    return { main: this.mapValues(group, wer), live: liveMap ? this.mapValues(group, wer, liveMap) : {} };
   }
 
   /** Anschlussstatus erst übernehmen, wenn er zweimal gleich gemeldet wurde (Gerät vertauscht gelegentlich Hex-Ziffern) */
@@ -234,13 +260,9 @@ class SecutestManager {
   async remoteStart(group, { second = false } = {}) {
     const def = REMOTE[group];
     if (!def) throw Object.assign(new Error(`Für „${group}“ gibt es keine Fernsteuerung.`), { status: 400 });
+    if (group === 'FT') return this.releaseForFunctionTest();
     const d = this.driver;
     if (!d.remoteActive) await d.setRemote(true);
-    if (group === 'FT') {
-      if (!this.cfg().softwareMains) return { started: false, manual: true, message: 'Bitte Taste FUNCTION-TEST (14) am Gerät drücken (Netz an Prüfdose).' };
-      await d.pressKey('FUNCTION_TEST');
-      return { started: true };
-    }
     const cmds = second && def.second ? def.second : def.start;
     for (const c of cmds) {
       const ok = await d.startMeasurement(c.replace(/^MES!/, ''));
@@ -249,17 +271,69 @@ class SecutestManager {
     return { started: true };
   }
 
+  /**
+   * Automatik (PC-gesteuert): Messung starten (R_SL in beiden Polungen), einschwingen lassen und den Wert
+   * übernehmen, sobald er in zwei Ablesungen im Abstand von einer Sekunde gleich ist – eingeschwungen und
+   * nicht verfälscht übertragen. Höchstens eine Abfrage pro Sekunde: Bei etwa 5 Abfragen/s bricht der
+   * SECUTEST die Messung ab bzw. startet neu (am Gerät gemessen). Die Oberfläche bekommt die Live-Werte
+   * deshalb per Ereignis „measure“, statt selbst zusätzlich abzufragen.
+   */
+  async autoMeasure(group, { settleMs = 2500, readEveryMs = 1000, maxMs = 25000 } = {}) {
+    const def = REMOTE[group];
+    if (!def || group === 'FT') throw Object.assign(new Error(`Für „${group}“ gibt es keine automatische Messung.`), { status: 400 });
+    await this.remoteStart(group);
+    if (def.second) {
+      await sleep(settleMs);
+      await this.remoteStart(group, { second: true });
+    }
+    const t0 = Date.now();
+    await sleep(settleMs);
+    let prev = null;
+    for (;;) {
+      const { main, live } = await this._readGroup(group, def.live);
+      this.broadcast('measure', { group, values: { ...live, ...main } });
+      const m = main[def.final];
+      if (m?.value != null && prev?.[def.final]?.text === m.text && prev[def.final].unit === m.unit) {
+        const values = {};
+        const unconfirmed = [];
+        for (const [k, v] of Object.entries(main)) {
+          if (prev[k]?.text === v.text) values[k] = v;
+          else if (v.value != null) unconfirmed.push(k);
+        }
+        return { group, values, unconfirmed, ms: Date.now() - t0 };
+      }
+      prev = main;
+      if (Date.now() - t0 > maxMs) throw Object.assign(new Error(`Kein stabiler Messwert innerhalb von ${Math.round(maxMs / 1000)} s – Anschluss und Prüfling prüfen.`), { status: 504, code: 'UNSTABLE' });
+      await sleep(readEveryMs);
+    }
+  }
+
+  /**
+   * Funktionstest (PC-gesteuert): Den führt der Prüfer am SECUTEST durch (mehrere Tasten, Netz an die
+   * Prüfdose mit Taste 14). Dafür nur die Fernsteuerung abschalten – im Fernsteuermodus sperrt das Gerät
+   * seine Tasten. (Am Gerät geprüft: ^C beendet einen laufenden Funktionstest nicht, ein Programmwechsel per RST! schon.)
+   */
+  async releaseForFunctionTest() {
+    const d = this.driver;
+    if (this.cfg().softwareMains) {
+      if (!d.remoteActive) await d.setRemote(true);
+      await d.pressKey('FUNCTION_TEST');
+      return { started: true };
+    }
+    if (d.remoteActive) await d.setRemote(false);
+    return { started: false, manual: true, message: 'Funktionstest bitte am SECUTEST durchführen – die Fernsteuerung ist aus, alle Tasten sind frei.' };
+  }
+
   /** confirm: Werte zum Übernehmen (zweimal gleich gelesen), sonst Live-Werte inkl. Anzeigewert */
   async remoteRead(group, { confirm = false } = {}) {
     const def = REMOTE[group];
     if (!def) throw Object.assign(new Error(`Unbekannte Messgruppe ${group}`), { status: 400 });
-    const r = confirm ? await this.readConfirmed(group) : { values: this.mapValues(group, await this.driver.getValues(def.read)), unconfirmed: [] };
+    const r = confirm ? await this.readConfirmed(group) : await this._readGroup(group, group === 'FT' ? null : def.live).then(({ main, live }) => ({ values: { ...live, ...main }, last: main, unconfirmed: [] }));
     if (group === 'FT') {
-      const active = ftActive(r.last || r.values);
+      const active = ftActive(r.last);
       return { group, values: active ? r.values : {}, unconfirmed: active ? r.unconfirmed : [], ftActive: active };
     }
-    const live = confirm ? {} : await this._readLive(group, def.live);
-    return { group, values: { ...live, ...r.values }, unconfirmed: r.unconfirmed };
+    return { group, values: r.values, unconfirmed: r.unconfirmed };
   }
 
   async remoteStopFunctionTest() {
@@ -283,16 +357,15 @@ class SecutestManager {
     if (group) {
       try {
         const def = REMOTE[group];
-        const r = confirm ? await this.readConfirmed(group) : { values: this.mapValues(group, await this.driver.getValues(def.read)), unconfirmed: [] };
+        // Anzeigewert: die laufende Messnummer (z. B. R_ISO Nr. 18, I_EA über Sonde Nr. 24) – in derselben Abfrage
+        const nums = st.running.filter((n) => groupForMeasurementNo(n) === group && !def.read.includes(n));
+        const liveMap = group === 'FT' ? null : nums.length ? { [`${def.final}_LIVE`]: nums[0] } : def.live;
+        const r = confirm ? await this.readConfirmed(group) : await this._readGroup(group, liveMap).then(({ main, live }) => ({ values: { ...live, ...main }, last: main, unconfirmed: [] }));
         values = r.values;
         unconfirmed = r.unconfirmed;
         if (group === 'FT') {
-          ftOn = ftActive(r.last || r.values);
+          ftOn = ftActive(r.last);
           if (!ftOn) (values = {}), (unconfirmed = []);
-        } else if (!confirm) {
-          // Anzeigewert: die laufende Messnummer (z. B. R_ISO Nr. 18, I_EA über Sonde Nr. 24)
-          const nums = st.running.filter((n) => groupForMeasurementNo(n) === group && !def.read.includes(n));
-          values = { ...(await this._readLive(group, nums.length ? { [`${def.final}_LIVE`]: nums[0] } : def.live)), ...values };
         }
       } catch {
         /* egal */

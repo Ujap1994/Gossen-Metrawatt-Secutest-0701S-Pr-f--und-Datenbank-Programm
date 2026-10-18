@@ -2,7 +2,7 @@
 import { h, $, clear, toast, modal } from './ui.js';
 import { disclaimerContent } from './disclaimer.js';
 import { shutdownApp } from './shutdown.js';
-import { get, post, setLockedOutHandler } from './api.js';
+import { get, post, setLockedOutHandler, setPaused, setBoot } from './api.js';
 import { state, loadMeta, connectEvents, disconnectEvents, onSecutest } from './state.js';
 import { renderLogin } from './views/login.js';
 import { renderDashboard } from './views/dashboard.js';
@@ -67,6 +67,7 @@ const NAV = [
 ];
 
 let shell = null;
+let shellUnsub = null;
 
 function parseHash() {
   const [path, query = ''] = location.hash.split('?');
@@ -127,14 +128,17 @@ window.addEventListener('beforeunload', (e) => {
 function secutestPill() {
   const s = state.secutest;
   const connected = s?.connected;
-  const label = !s ? 'SECUTEST …' : connected ? (s.simulator ? 'Simulator verbunden' : `SECUTEST an ${s.port}`) : s.scanning ? 'Suche SECUTEST …' : 'SECUTEST nicht verbunden';
-  return h('a', { class: 'pill-status', href: '#/secutest', title: 'SECUTEST-Verbindung' }, h('span', { class: `dot ${connected ? (s.simulator ? 'sim' : 'on') : 'off'}` }), label);
+  const silent = connected && s.responding === false;
+  const label = !s ? 'SECUTEST …' : silent ? 'SECUTEST antwortet nicht' : connected ? (s.simulator ? 'Simulator verbunden' : `SECUTEST an ${s.port}`) : s.scanning ? 'Suche SECUTEST …' : 'SECUTEST nicht verbunden';
+  return h('a', { class: 'pill-status', href: '#/secutest', title: silent ? 'Verbunden, aber keine Antwort – SECUTEST eingeschaltet?' : 'SECUTEST-Verbindung' }, h('span', { class: `dot ${connected && !silent ? (s.simulator ? 'sim' : 'on') : 'off'}` }), label);
 }
 
 function buildShell() {
   const meta = state.meta;
   const pillBox = h('span', {}, secutestPill());
-  onSecutest((type, data) => {
+  shellUnsub?.(); // sonst kommt nach jedem Entsperren ein weiterer Empfänger dazu
+  shellUnsub = onSecutest((type, data) => {
+    if (type === 'superseded') return showPaused();
     if (type === 'state') clear(pillBox).appendChild(secutestPill());
     if (type === 'device-found') toast(`SECUTEST an ${data?.path || 'neuem Port'} gefunden`, 'ok');
     if (type === 'port-added') toast(`Neue serielle Schnittstelle erkannt: ${data?.path} – prüfe auf SECUTEST …`, 'info');
@@ -183,6 +187,21 @@ function showLogin(message) {
   renderLogin(root, { message, onUnlocked: startApp });
 }
 
+/** Ein anderer Tab hat übernommen: diesen pausieren (laufende Prüfung bleibt erhalten) */
+function showPaused() {
+  setPaused(true);
+  if (document.getElementById('paused-overlay')) return;
+  const resume = () => {
+    document.getElementById('paused-overlay')?.remove();
+    setPaused(false);
+    connectEvents();
+    route();
+  };
+  document.body.appendChild(
+    h('div', { id: 'paused-overlay', class: 'modal-overlay' }, h('div', { class: 'modal', style: { padding: '20px' } }, h('h2', { style: { marginTop: 0 } }, '⏸ In einem anderen Tab geöffnet'), h('p', {}, 'Der Prüfmanager wird gerade in einem anderen Browser-Tab benutzt. Dieser Tab ist pausiert, damit nicht zwei Fenster gleichzeitig das SECUTEST steuern. Eine angefangene Prüfung bleibt hier erhalten.'), h('div', { class: 'row end' }, h('button', { class: 'btn primary', onclick: resume }, 'Hier weiterarbeiten'))))
+  );
+}
+
 async function startApp() {
   await loadMeta();
   try {
@@ -203,6 +222,7 @@ setLockedOutHandler(() => {
 (async function boot() {
   try {
     const st = await get('/status');
+    setBoot(st.boot);
     if (st.authed) await startApp();
     else showLogin();
   } catch (e) {

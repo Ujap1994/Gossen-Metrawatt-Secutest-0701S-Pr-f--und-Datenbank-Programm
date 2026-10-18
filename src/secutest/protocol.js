@@ -60,6 +60,14 @@ function buildCommand(command, { address = null, withChecksum = true } = {}) {
   return withDelim + checksum(withDelim) + CTRL.CR;
 }
 
+/**
+ * Empfangene Zeile bereinigen: Steuerzeichen (XON/XOFF, ^C) und den Prompt „>“ entfernen,
+ * den das Gerät nach jeder Antwort ohne Zeilenende sendet – er landet vor der nächsten Zeile.
+ */
+function cleanLine(raw) {
+  return String(raw).replace(/[\x00-\x1f]/g, '').trim().replace(/^>+\s*/, '');
+}
+
 /** Zerlegt eine empfangene Zeile. */
 function parseLine(raw) {
   const line = String(raw).replace(/[\r\n\x00]+/g, '').trim();
@@ -286,4 +294,4 @@ function parsePro(params) {
   };
 }
 
-module.exports = { CTRL, KEYS, SWITCH_POSITIONS, checksum, buildCommand, parseLine, parseNumber, convertUnit, parseWer, parseMes, parseIdn, parsePro, CONNECTION_FLAGS };
+module.exports = { CTRL, KEYS, SWITCH_POSITIONS, checksum, buildCommand, cleanLine, parseLine, parseNumber, convertUnit, parseWer, parseMes, parseIdn, parsePro, CONNECTION_FLAGS };

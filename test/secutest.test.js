@@ -70,6 +70,9 @@ const SK2_RECORDING = {
   'WER?19,20,21,96$73': frame('WERTEx=19:>310.0M\xea;20:>310.0M\xea;21:>310.0M\xea;96:0538.V$20'),
   'MES!24$90': frame('.Yx$23'),
   'WER?28,29,30$E1': frame('WERTEx=28:00.08mA;29:00.08mA;30:00.18mA$A9'),
+  // Haupt- und Anzeigewert in einer Abfrage (am Gerät geprüft: WER?18,19,20,21,96)
+  [cmd('WER?19,20,21,96,18')]: dev('WERTEx=19:>310.0M\xea;20:>310.0M\xea;21:>310.0M\xea;96:0538.V;18:>310.0M\xea'),
+  [cmd('WER?28,29,30,24')]: dev('WERTEx=28:00.08mA;29:00.08mA;30:00.18mA;24:00.10mA'),
   'TAS!r$9F': frame('.Yx$23') + '\x03',
   'PRO?$54': frame('.Nx$18'),
 };
@@ -245,10 +248,63 @@ test('Anschlussstatus erst nach zwei gleichen Meldungen übernehmen („0A“ st
 test('Anzeigewert des Displays wird mitgelesen (I_EA über Sonde = Nr. 24), aber nicht übernommen', async () => {
   const mgr = new SecutestManager();
   mgr.driver.opts.settleMs = 1;
-  attach(mgr.driver, { ...SK2_RECORDING, [cmd('WER?24')]: dev('WERTEx=24:00.10mA') });
+  const port = attach(mgr.driver, SK2_RECORDING);
   const live = await mgr.remoteRead('IB');
+  assert.deepEqual(port.writes, [cmd('WER?28,29,30,24')], 'eine Abfrage statt zwei');
   assert.deepEqual([live.values.IB_LIVE.value, live.values.IB.value], [0.1, 0.18]);
   assert.ok(!('IB_LIVE' in (await mgr.remoteRead('IB', { confirm: true })).values));
+});
+
+test('Automatik: höchstens eine Abfrage je Ablesung, Wert erst übernehmen, wenn er zweimal gleich gelesen wurde', async () => {
+  const mgr = new SecutestManager();
+  mgr.driver.opts.settleMs = 1;
+  const busy = dev('WERTEx=19:----.M\xea;20:----.M\xea;21:----.M\xea;96:0538.V;18:>11.00M\xea');
+  const port = attach(mgr.driver, { ...SK2_RECORDING, [cmd('WER?19,20,21,96,18')]: [busy, SK2_RECORDING[cmd('WER?19,20,21,96,18')]] });
+  const events = [];
+  mgr.broadcast = (type, data) => type === 'measure' && events.push(data.values.RISO_LIVE?.text);
+  const r = await mgr.autoMeasure('RISO', { settleMs: 1, readEveryMs: 1 });
+  assert.deepEqual([r.values.RISO.value, r.values.RISO.qualifier, r.values.UISO.value], [310, '>', 538]);
+  const reads = port.writes.filter((w) => w.startsWith('WER?'));
+  assert.deepEqual(reads, Array(3).fill(cmd('WER?19,20,21,96,18')), '„----.“, dann zweimal >310');
+  assert.deepEqual(events, ['>11.00', '>310.0', '>310.0'], 'Live-Werte per Ereignis an die Oberfläche');
+});
+
+test('Treiber hält Abstand zwischen Befehlen – auch wenn der Aufrufer auf jede Antwort wartet', async () => {
+  assert.ok(new SecutestDriver().opts.settleMs >= 250);
+  const d = new SecutestDriver({ settleMs: 120 });
+  const port = attach(d, { 'MES?$48': frame('A0;$D0') });
+  const times = [];
+  port.on('data', () => times.push(Date.now()));
+  for (let i = 0; i < 4; i++) await d.getStatus(); // nacheinander, wie die Anschlusskontrolle
+  const gaps = times.slice(1).map((t, i) => t - times[i]);
+  assert.ok(gaps.every((g) => g >= 110), `Abstände ${gaps.join(', ')} ms`);
+});
+
+test('Echo nach einem Neustart des Geräts wird wieder abgeschaltet', async () => {
+  const d = new SecutestDriver({ settleMs: 1 });
+  const port = attach(d, { 'MES?$48': 'MES?$48\r\n' + frame('A0;$D0') });
+  assert.equal((await d.getStatus()).flags.dose, true);
+  assert.ok(port.writes.includes('\x06'), '^F gesendet');
+});
+
+test('Automatik R_SL misst beide Polungen', async () => {
+  const mgr = new SecutestManager();
+  mgr.driver.opts.settleMs = 1;
+  const port = attach(mgr.driver, { 'TAS!R$7F': frame('.Yx$23'), [cmd('MES!8')]: frame('.Yx$23'), [cmd('MES!10')]: frame('.Yx$23'), [cmd('WER?12,13,14,15')]: dev('WERTEx=12:0.081\xea;13:0.084\xea;14:0.003\xea;15:0.098\xea') });
+  const r = await mgr.autoMeasure('RSL', { settleMs: 1, readEveryMs: 1 });
+  assert.equal(r.values.RSL.value, 0.098);
+  assert.ok(port.writes.indexOf(cmd('MES!10')) > port.writes.indexOf(cmd('MES!8')));
+});
+
+test('Funktionstest macht der Prüfer am SECUTEST: nur Fernsteuerung aus (sonst sind die Tasten gesperrt)', async () => {
+  const mgr = new SecutestManager();
+  mgr.driver.opts.settleMs = 1;
+  const port = attach(mgr.driver, { 'TAS!R$7F': frame('.Yx$23'), 'TAS!r$9F': frame('.Yx$23') + '\x03' });
+  await mgr.driver.setRemote(true);
+  const r = await mgr.remoteStart('FT');
+  assert.equal(r.manual, true);
+  assert.equal(mgr.driver.remoteActive, false);
+  assert.deepEqual(port.writes, ['TAS!R$7F', 'TAS!r$9F'], 'kein Programmwechsel, keine Taste');
 });
 
 test('Timeout ohne Gerät', async () => {

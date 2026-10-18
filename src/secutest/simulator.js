@@ -37,9 +37,10 @@ function fmtVal(v, digits, maxRange) {
 const SWITCH_NAMES = { 1: 'FUNCTION-TEST', 2: 'MENUE', 3: 'OFF', 4: 'AUTO', 5: 'SK I', 6: 'SK II', 7: 'SK III', 8: 'T 240' };
 
 class SimulatedSecutest extends EventEmitter {
-  constructor({ scenario = DEFAULT_SCENARIO, latencyMs = 25, stepMs = null } = {}) {
+  constructor({ scenario = DEFAULT_SCENARIO, latencyMs = 25, stepMs = null, refreshMs = 1000 } = {}) {
     super();
     this.latency = latencyMs;
+    this.refreshMs = refreshMs; // Anzeige-Aktualisierung (echtes Gerät: etwa 1 s)
     this.stepMs = stepMs; // nur für Tests: Dauer je Messschritt im gerätegeführten Ablauf
     this.buffer = '';
     this.echo = true;
@@ -47,6 +48,7 @@ class SimulatedSecutest extends EventEmitter {
     this.address = null;
     this.switchPos = 'AUTO';
     this.values = {};
+    this.held = {}; // Min/Max je Messung – wie am Gerät gehalten
     this.running = [];
     this.timers = [];
     this.sequence = null; // gerätegeführter Ablauf
@@ -94,6 +96,11 @@ class SimulatedSecutest extends EventEmitter {
     this._send((ok ? 'Y' : 'N') + (this.address ?? ''));
   }
 
+  /** wie am Gerät: nach dem Funktionstest stehen die Werte wieder auf „----.“ */
+  _clearFunctionTest() {
+    for (let n = 48; n <= 67; n++) delete this.values[n];
+  }
+
   _clearTimers() {
     this.timers.forEach(clearTimeout);
     this.timers = [];
@@ -124,6 +131,7 @@ class SimulatedSecutest extends EventEmitter {
   }
 
   _abort() {
+    this.held = {};
     this.running = [];
     this.sequence = null;
     this.mainsOn = false;
@@ -136,6 +144,8 @@ class SimulatedSecutest extends EventEmitter {
     const set = (k, val) => {
       v[k] = val;
     };
+    // Minimum/Maximum seit Messbeginn (das Gerät hält sie, der übernommene Wert hängt daran)
+    const hold = (key, x) => (this.held[key] = { lo: Math.min(this.held[key]?.lo ?? x, x), hi: Math.max(this.held[key]?.hi ?? x, x) });
     if (n >= 8 && n <= 15) {
       if (s.sk !== 'SK I') {
         set(12, null);
@@ -145,18 +155,20 @@ class SimulatedSecutest extends EventEmitter {
         return;
       }
       const a = jitter(s.RSL, 0.03);
-      const b = jitter(s.RSL, 0.05);
-      set(12, Math.min(a, b));
-      set(13, Math.max(a, b));
-      set(14, Math.abs(a - b));
-      set(15, Math.max(a, b) * 1.05 + 0.01);
+      hold('rsl', a);
+      const { lo, hi } = hold('rsl', jitter(s.RSL, 0.05));
+      set(12, lo);
+      set(13, hi);
+      set(14, hi - lo);
+      set(15, hi * 1.05 + 0.01);
     } else if ((n >= 16 && n <= 21) || (n >= 96 && n <= 98)) {
       const r = s.RISO >= 310 ? 311 : jitter(s.RISO, 0.02);
       set(16, r); // Anzeigewert (laufende Messnummer)
       set(18, r);
-      set(19, r);
-      set(20, r * 1.01);
-      set(21, r >= 310 ? 311 : r * 0.95);
+      const { lo, hi } = hold('riso', r);
+      set(19, lo);
+      set(20, hi);
+      set(21, lo >= 310 ? 311 : lo * 0.95);
       const u = jitter(537, 0.005);
       set(96, u);
       set(97, u - 1);
@@ -165,9 +177,10 @@ class SimulatedSecutest extends EventEmitter {
       const i = jitter(s.IEA, 0.03);
       set(24, i); // Anzeigewert (laufende Messnummer)
       set(26, i);
-      set(28, i * 0.98);
-      set(29, i * 1.02);
-      set(30, i * 1.05 + 0.01);
+      const { lo, hi } = hold('iea', i);
+      set(28, lo);
+      set(29, hi);
+      set(30, hi * 1.05 + 0.01);
     } else if (n >= 32 && n <= 38) {
       const i = jitter(s.ISONDE, 0.1);
       set(32, i);
@@ -240,9 +253,13 @@ class SimulatedSecutest extends EventEmitter {
     }
     if (n === 64) {
       this.mainsOn = false;
+      this._clearFunctionTest();
       this.running = [];
       return true;
     }
+    // neue Messung: gehaltene Min/Max zurücksetzen – beim Polungswechsel von R_SL (MES!8 → MES!10) nicht
+    const grp = n >= 8 && n <= 15 ? 'rsl' : (n >= 16 && n <= 21) || (n >= 96 && n <= 98) ? 'riso' : n >= 24 && n <= 30 ? 'iea' : String(n);
+    if (grp !== this.heldGroup) (this.held = {}), (this.heldGroup = grp);
     const groupStart = { 8: [8, 12, 13, 14, 15], 9: [9], 10: [10, 12, 13, 14, 15], 11: [11], 16: [16, 96], 17: [17, 96], 18: [18, 96], 24: [24], 25: [25], 26: [26], 27: [27], 32: [32], 72: [72], 73: [73], 80: [80], 82: [82] };
     this.running = groupStart[n] ? [n] : [n];
     this._gen(n);
@@ -293,6 +310,8 @@ class SimulatedSecutest extends EventEmitter {
     }
     const st = seq.steps[seq.idx];
     this.running = [st.m];
+    this.held = {};
+    this.heldGroup = null;
     this._gen(st.m);
     const dur = this.stepMs ?? (st.m === 8 ? 4000 : 2500);
     const t = setTimeout(() => {
@@ -397,7 +416,11 @@ class SimulatedSecutest extends EventEmitter {
       return;
     }
     if (op === 'WER' && operator === '?') {
-      for (const n of this.running) this._gen(n >= 48 && n <= 67 ? 'FT' : n);
+      // wie das echte Gerät: Anzeigewerte ändern sich höchstens etwa einmal pro Sekunde, nicht bei jeder Abfrage
+      if (!this._lastGen || Date.now() - this._lastGen >= this.refreshMs) {
+        this._lastGen = Date.now();
+        for (const n of this.running) this._gen(n >= 48 && n <= 67 ? 'FT' : n);
+      }
       const nums = params
         ? params
             .split(/[,;]/)
@@ -418,7 +441,7 @@ class SimulatedSecutest extends EventEmitter {
         if (this.mainsOn) {
           this._energy = 0;
           this._gen('FT');
-        }
+        } else this._clearFunctionTest();
       } else if (!/^[0-3Mm]$/.test(t)) {
         this._ack(false);
         return;

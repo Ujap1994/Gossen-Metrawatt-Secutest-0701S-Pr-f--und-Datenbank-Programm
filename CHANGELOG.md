@@ -16,8 +16,16 @@ Am echten SECUTEST S (Firmware GTM5015000R0001, USB-RS232-Adapter FTDI) getestet
 * **Vertauschte Zeichen**, die die Prüfsumme nicht erkennt: Das Gerät verdreht gelegentlich den Anfang einer Antwort („0A“ statt „A0“). Werte für das Prüfprotokoll und das Geräteprotokoll (PRO?) werden deshalb zweimal gleich gelesen, und der Anschlussstatus wechselt erst nach zwei gleichen Meldungen.
 * **Funktionstest:** Werte werden nur übernommen, solange der Funktionstest wirklich läuft (Netz an der Prüfdose). Vorher ließ sich ein Funktionstest dokumentieren, der nie stattgefunden hat.
 * Kurzschlusstest (MES!1) mit längerer Wartezeit, Geräte-ID ohne Füllzeichen, elektrische Arbeit (kWh) wird übernommen.
+* **R_ISO sprang stark statt stabil „>310 MΩ“ zu zeigen:** Bei etwa 5 Abfragen pro Sekunde bricht der SECUTEST die Messung ab und startet sogar neu (am Gerät gemessen). Zwischen zwei Befehlen liegen jetzt immer mindestens 250 ms; während einer Messung fragt das Programm höchstens einmal pro Sekunde ab.
+* **Hängt sich auf, liest keine Daten mehr:** Live-Anzeigen fragten in festem Takt, auch wenn die vorige Antwort noch fehlte – bei langsamem oder stummem Gerät stauten sich die Anfragen endlos. Die nächste Abfrage startet jetzt erst nach der vorigen, gleiche Abfragen werden zusammengelegt.
+* **Findet den SECUTEST nicht von allein:** Die Suche hatte denselben „>“-Fehler wie der Treiber und gab nach einer „beschäftigt“-Antwort auf. Solange keine Verbindung besteht, fragt sie die USB-Adapter jetzt alle 10 s erneut an (z. B. SECUTEST erst nach dem Programmstart eingeschaltet). Bluetooth-Geräte werden nicht mehr angefragt.
+* **macOS: Nach dem Schließen des Browser-Tabs ließ sich das Programm nicht mehr öffnen:** Die App lief unsichtbar weiter, und macOS ignorierte jeden weiteren Doppelklick. Jetzt öffnet jeder Doppelklick die Oberfläche; eine hängende alte Instanz wird erkannt, beendet und neu gestartet. Protokoll unter `~/Library/Logs/Secutest Pruefmanager/server.log`.
+* **Mehrere Browser-Tabs:** Ein neuer Tab pausiert die älteren („Hier weiterarbeiten“), ein Tab von vor einem Neustart wird erkannt und kann das Gerät nicht mehr steuern. Nach einem Neustart lädt sich die Oberfläche selbst neu.
+* Die Statusanzeige meldet „SECUTEST antwortet nicht“; nach dem Aus- und Einschalten des Geräts verbindet sich das Programm von selbst wieder.
 
 ### Neu
+* **Automatik im Modus „PC-gesteuert“:** Anschlusskontrolle, danach misst das Programm jeden Schritt selbst (3 s Vorwarnung), wartet auf einen stabilen Wert, trägt ihn ein, bewertet und schaltet weiter. Bei einem Grenzwertverstoß hält es an; pausieren geht jederzeit. Die Sichtprüfung bleibt beim Prüfer.
+* **Funktionstest am SECUTEST:** Das Programm gibt die Tasten frei (Fernsteuerung aus), der Prüfer führt den Funktionstest am Gerät durch und übernimmt die Werte mit „📥 Werte vom SECUTEST übernehmen“. Ist er beim „Weiter“ noch nicht abgeschlossen, erinnert das Programm daran.
 * Live-Anzeige zeigt zusätzlich den **Anzeigewert des Displays**. Übernommen wird wie im Geräteprotokoll der Wert inkl. Gebrauchsfehler.
 * Gerätegeführt: Meldet das SECUTEST „Protokoll fertig“, holt das Programm das Ergebnis im Schritt „Bewertung“ automatisch ab.
 
