@@ -31,6 +31,25 @@ const ftActive = (values) => values.W?.value != null;
 const FT_HELD = { P: 'P_MAX', I: 'I_MAX' };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** Zwei Anzeigewerte gleich bis auf das Kippen der letzten Stelle (höchstens 2 % bzw. 2 Stellen) */
+function near(a, b) {
+  if (a?.value == null || b?.value == null || a.qualifier !== b.qualifier || a.unit !== b.unit) return false;
+  if (a.text === b.text) return true;
+  const digit = 10 ** -((String(a.text).split('.')[1] || '').replace(/\D/g, '').length);
+  return Math.abs(a.value - b.value) <= Math.max(Math.abs(b.value) * 0.02, 2 * digit);
+}
+
+/**
+ * Unruhe während der Messung (z. B. Prüfling berührt): Das Gerät hält Minimum/Maximum, und der übernommene
+ * Wert hängt daran. Liegt das Minimum (R_ISO) weit unter bzw. das Maximum (I_B, I_EA) weit über dem
+ * eingeschwungenen Anzeigewert, wäre der Wert verfälscht – dann nicht still übernehmen.
+ */
+const TRANSIENT = {
+  RISO: (v) => v.RISO_MIN?.value != null && v.RISO_LIVE?.value != null && ((v.RISO_LIVE.qualifier === '>' && v.RISO_MIN.qualifier !== '>') || v.RISO_MIN.value < v.RISO_LIVE.value * 0.5),
+  IB: (v) => v.IB_MAX?.value != null && v.IB_LIVE?.value != null && v.IB_MAX.value > v.IB_LIVE.value * 2 && v.IB_MAX.value - v.IB_LIVE.value > 0.05,
+  IEA: (v) => v.IEA_MAX?.value != null && v.IEA_LIVE?.value != null && v.IEA_MAX.value > v.IEA_LIVE.value * 2 && v.IEA_MAX.value - v.IEA_LIVE.value > 0.05,
+};
+
 const DEFAULT_SECUTEST_CFG = {
   address: null,
   withChecksum: true,
@@ -278,9 +297,11 @@ class SecutestManager {
    * SECUTEST die Messung ab bzw. startet neu (am Gerät gemessen). Die Oberfläche bekommt die Live-Werte
    * deshalb per Ereignis „measure“, statt selbst zusätzlich abzufragen.
    */
-  async autoMeasure(group, { settleMs = 2500, readEveryMs = 1000, maxMs = 25000 } = {}) {
+  async autoMeasure(group, { settleMs = 2500, readEveryMs = 1000, maxMs = 25000, fresh = false } = {}) {
     const def = REMOTE[group];
     if (!def || group === 'FT') throw Object.assign(new Error(`Für „${group}“ gibt es keine automatische Messung.`), { status: 400 });
+    // Wiederholung: Fernsteuerung kurz aus – erst dann setzt das Gerät Minimum/Maximum zurück
+    if (fresh && this.driver.remoteActive) await this.driver.setRemote(false);
     await this.remoteStart(group);
     if (def.second) {
       await sleep(settleMs);
@@ -293,17 +314,21 @@ class SecutestManager {
       const { main, live } = await this._readGroup(group, def.live);
       this.broadcast('measure', { group, values: { ...live, ...main } });
       const m = main[def.final];
-      if (m?.value != null && prev?.[def.final]?.text === m.text && prev[def.final].unit === m.unit) {
+      const liveKey = Object.keys(live)[0];
+      // eingeschwungen: übernommener Wert in zwei Ablesungen gleich und auch die Anzeige ruhig
+      const steady = m?.value != null && prev?.main[def.final]?.text === m.text && prev.main[def.final].unit === m.unit && (!liveKey || near(live[liveKey], prev.live[liveKey]));
+      if (steady) {
         const values = {};
         const unconfirmed = [];
         for (const [k, v] of Object.entries(main)) {
-          if (prev[k]?.text === v.text) values[k] = v;
+          if (prev.main[k]?.text === v.text) values[k] = v;
           else if (v.value != null) unconfirmed.push(k);
         }
-        return { group, values, unconfirmed, ms: Date.now() - t0 };
+        const transient = !!TRANSIENT[group]?.({ ...main, ...live });
+        return { group, values, live, unconfirmed, transient, ms: Date.now() - t0 };
       }
-      prev = main;
-      if (Date.now() - t0 > maxMs) throw Object.assign(new Error(`Kein stabiler Messwert innerhalb von ${Math.round(maxMs / 1000)} s – Anschluss und Prüfling prüfen.`), { status: 504, code: 'UNSTABLE' });
+      prev = { main, live };
+      if (Date.now() - t0 > maxMs) throw Object.assign(new Error(`Kein stabiler Messwert innerhalb von ${Math.round(maxMs / 1000)} s – wird der Prüfling berührt? Anschluss prüfen und wiederholen.`), { status: 504, code: 'UNSTABLE' });
       await sleep(readEveryMs);
     }
   }

@@ -66,8 +66,10 @@ test('Desktop-Programm: automatische SK-II-Prüfung, Funktionstest von Hand, Spe
     await page.getByRole('button', { name: /Alle in Ordnung/ }).click();
     await page.getByRole('button', { name: /^Weiter/ }).click();
 
-    // R_ISO und I_B: messen, eintragen, weiterschalten – ohne Klick
+    // vor der ersten Messung mit Prüfspannung einmal „Hände weg“ bestätigen, danach ohne Klick
     await expect(stepTitle(page)).toContainText('Isolationswiderstand');
+    await page.getByRole('button', { name: /Hände weg – Messungen starten/ }).click();
+    // R_ISO und I_B: messen, eintragen, weiterschalten – ohne Klick
     await expect(page.getByText('Messung läuft')).toBeVisible({ timeout: 15_000 });
     await page.screenshot({ path: path.join(SHOTS, '2-riso-automatik.png') });
     await expect(stepTitle(page)).toContainText('Berührungsstrom', { timeout: 40_000 });

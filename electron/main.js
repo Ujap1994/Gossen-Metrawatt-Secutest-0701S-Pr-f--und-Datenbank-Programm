@@ -15,7 +15,10 @@ const path = require('path');
 const ICON = path.join(__dirname, '..', 'build', 'icon.png');
 const SIMULATOR = process.argv.includes('--simulator') || process.env.SECUTEST_SIMULATOR === '1';
 // Tests: eigener Programmordner (sonst greift die Einzelinstanz-Sperre des echten Programms) und eigener Port
-if (process.env.SECUTEST_USER_DATA) app.setPath('userData', process.env.SECUTEST_USER_DATA);
+if (process.env.SECUTEST_USER_DATA) {
+  app.setPath('userData', process.env.SECUTEST_USER_DATA);
+  app.setAppLogsPath(path.join(process.env.SECUTEST_USER_DATA, 'logs'));
+}
 const PORT = Number(process.env.SECUTEST_DESKTOP_PORT ?? 37017);
 
 // ---------------------------------------------------------------------------
@@ -120,12 +123,28 @@ async function start() {
     autoHideMenuBar: process.platform !== 'darwin',
     webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, spellcheck: false },
   });
-  if (b.maximized) mainWindow.maximize();
+  // immer maximiert starten (Wunsch des Prüfers); die gemerkte Größe gilt beim Verkleinern
+  mainWindow.maximize();
   mainWindow.once('ready-to-show', () => mainWindow.show());
   mainWindow.on('close', () => saveBounds(mainWindow));
   mainWindow.on('closed', () => (mainWindow = null));
   guardContents(mainWindow.webContents, sameOrigin);
+  logRenderer(mainWindow.webContents);
   await mainWindow.loadURL(server.url);
+}
+
+/** Fehler, Seitenwechsel und Abstürze der Oberfläche in die Protokolldatei – sonst nicht nachvollziehbar */
+function logRenderer(contents) {
+  const levels = { 2: 'WARN', 3: 'FEHLER' };
+  contents.on('console-message', (e) => {
+    const level = e.level ?? e.params?.level;
+    const name = typeof level === 'number' ? levels[level] : { warning: 'WARN', error: 'FEHLER' }[level];
+    if (name) console.log(`[Oberfläche] ${name} ${e.message ?? e.params?.message} (${e.sourceId ?? ''}:${e.lineNumber ?? ''})`);
+  });
+  contents.on('did-navigate', (e, url) => console.log(`[Oberfläche] Seite geladen: ${url}`));
+  contents.on('did-navigate-in-page', (e, url) => console.log(`[Oberfläche] Ansicht: ${new URL(url).hash || '/'}`));
+  contents.on('render-process-gone', (e, d) => console.error(`[Oberfläche] abgestürzt: ${d.reason} (${d.exitCode})`));
+  contents.on('unresponsive', () => console.error('[Oberfläche] reagiert nicht'));
 }
 
 /** Eigene Seiten (Prüfprotokoll, Plaketten, Anhänge) in eigenen Programmfenstern, alles andere im Standardbrowser */

@@ -287,6 +287,34 @@ test('Echo nach einem Neustart des Geräts wird wieder abgeschaltet', async () =
   assert.ok(port.writes.includes('\x06'), '^F gesendet');
 });
 
+test('Automatik wartet, bis auch die Anzeige ruhig ist, und erkennt Unruhe während der Messung (Prüfling berührt)', async () => {
+  const mgr = new SecutestManager();
+  mgr.driver.opts.settleMs = 1;
+  // echter Mitschnitt (Desktop-Programm, 18.10.): Anzeige steigt 24,5 → 30,0 MΩ, Minimum 15,7 MΩ gehalten …
+  const a = dev('WERTEx=19:015.7M\xea;20:035.8M\xea;21:013.1M\xea;96:0538.V;18:024.5M\xea');
+  const b = dev('WERTEx=19:015.7M\xea;20:042.4M\xea;21:013.1M\xea;96:0538.V;18:030.0M\xea');
+  // … danach losgelassen: Anzeige >310, das gehaltene Minimum bleibt
+  const c = dev('WERTEx=19:015.7M\xea;20:>310.0M\xea;21:013.1M\xea;96:0538.V;18:>310.0M\xea');
+  const port = attach(mgr.driver, { ...SK2_RECORDING, [cmd('WER?19,20,21,96,18')]: [a, b, c, c] });
+  const r = await mgr.autoMeasure('RISO', { settleMs: 1, readEveryMs: 1 });
+  assert.equal(port.writes.filter((w) => w.startsWith('WER?')).length, 4, 'nicht schon nach „13,1“ zweimal gleich, sondern erst bei ruhiger Anzeige');
+  assert.equal(r.transient, true, 'Minimum 15,7 MΩ weit unter der Anzeige >310 MΩ');
+  assert.equal(r.values.RISO.value, 13.1);
+
+  // ruhige Messung: keine Unruhe
+  attach(mgr.driver, SK2_RECORDING);
+  assert.equal((await mgr.autoMeasure('RISO', { settleMs: 1, readEveryMs: 1 })).transient, false);
+});
+
+test('Messung wiederholen: Fernsteuerung kurz aus, damit das Gerät Minimum/Maximum zurücksetzt', async () => {
+  const mgr = new SecutestManager();
+  mgr.driver.opts.settleMs = 1;
+  const port = attach(mgr.driver, SK2_RECORDING);
+  await mgr.driver.setRemote(true);
+  await mgr.autoMeasure('RISO', { settleMs: 1, readEveryMs: 1, fresh: true });
+  assert.deepEqual(port.writes.slice(0, 4), ['TAS!R$7F', 'TAS!r$9F', 'TAS!R$7F', 'MES!16$91']);
+});
+
 test('Automatik R_SL misst beide Polungen', async () => {
   const mgr = new SecutestManager();
   mgr.driver.opts.settleMs = 1;

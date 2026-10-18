@@ -137,7 +137,7 @@ module.exports = function secutestRoutes(manager) {
   // Automatik: starten, stabilen Wert abwarten, zweimal gleich gelesen zurückgeben
   r.post('/remote/auto', async (req, res) => {
     need();
-    res.json(await manager.autoMeasure(String(req.body?.group || '')));
+    res.json(await manager.autoMeasure(String(req.body?.group || ''), { fresh: !!req.body?.fresh }));
   });
 
   r.get('/remote/read', async (req, res) => {

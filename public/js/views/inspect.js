@@ -356,6 +356,8 @@ function stepView(navigate, redraw) {
   resultRedraw = null;
   const steps = W.proc.steps;
   const step = steps[W.stepIdx];
+  // außerhalb der Messschritte fasst der Prüfer das Gerät an: vor der nächsten Messung mit Prüfspannung neu bestätigen
+  if (step.type !== 'measure') W.handsOff = false;
   const progress = h(
     'div',
     { class: 'wizard-progress' },
@@ -702,30 +704,17 @@ function autoMeasureStep(step, { body, liveBox, drawPoints, next, redraw }) {
   body.prepend(banner);
   if (step.optional) return fill(banner, '⚙ Optionaler Schritt – „▶ Messung starten“ oder unten als „entfällt“ markieren.');
   const idx = W.stepIdx;
+  const group = remoteGroupOf(step);
   const alive = () => W && W.stepIdx === idx && W.auto && document.body.contains(banner);
   const pause = h('button', { class: 'btn sm', onclick: () => ((W.auto = false), redraw()) }, '⏸ Automatik anhalten');
+  const unit = (k) => state.meta.quantities[k]?.unit ?? state.meta.quantities[k.replace(/_(MIN|MAX|LIVE)$/, '')]?.unit ?? '';
+  const shown = (k, v) => (v ? `${valText(v)} ${unit(k)}` : '–');
   let started = false;
+  let running = false;
   let n = step.key === 'RSL' ? 5 : 3;
-  const measure = async () => {
-    if (started || !alive()) return;
-    started = true;
-    fill(banner, h('b', {}, '⏱ Messung läuft – Prüfling nicht berühren!'), ' Der Wert wird übernommen, sobald er stabil ist.');
-    const group = remoteGroupOf(step);
-    // Live-Werte schickt der Server während der Messung – kein zusätzliches Abfragen (das Gerät verkraftet nur wenige pro Sekunde)
-    const unsub = onSecutest((type, data) => type === 'measure' && data.group === group && document.body.contains(liveBox) && drawLive(liveBox, data.values));
-    let r;
-    try {
-      r = await post('/secutest/remote/auto', { group });
-    } catch (e) {
-      unsub();
-      if (!document.body.contains(banner)) return;
-      banner.className = 'alert bad';
-      return fill(banner, `✘ ${e.message} – Automatik angehalten. `, h('button', { class: 'btn sm', onclick: redraw }, '↻ Nochmal'));
-    }
-    unsub();
-    W.remoteActive = true;
-    if (!document.body.contains(banner) || W.stepIdx !== idx) return;
-    drawLive(liveBox, r.values);
+
+  // Wert übernehmen, bewerten und weiterschalten (bei Grenzwertverletzung anhalten)
+  const finish = (r) => {
     if (!takeConfirmed(step, r)) return fill(banner, '⚙ Kein stabiler Wert – „▶ Messung starten“ / „✓ Wert übernehmen“ von Hand.');
     drawPoints();
     const p = pts[pts.length - 1];
@@ -746,13 +735,51 @@ function autoMeasureStep(step, { body, liveBox, drawPoints, next, redraw }) {
     };
     advance();
   };
+
+  const measure = async (fresh = false) => {
+    if (running || (started && !fresh) || !alive()) return;
+    started = running = true;
+    banner.className = 'alert info';
+    fill(banner, h('b', {}, '⏱ Messung läuft – Prüfling nicht berühren!'), ' Der Wert wird übernommen, sobald er stabil ist.');
+    // Live-Werte schickt der Server während der Messung – kein zusätzliches Abfragen (das Gerät verkraftet nur wenige pro Sekunde)
+    const unsub = onSecutest((type, data) => type === 'measure' && data.group === group && document.body.contains(liveBox) && drawLive(liveBox, data.values));
+    let r;
+    try {
+      r = await post('/secutest/remote/auto', { group, fresh });
+    } catch (e) {
+      if (!document.body.contains(banner)) return;
+      banner.className = 'alert bad';
+      return fill(banner, `✘ ${e.message} – Automatik angehalten. `, h('button', { class: 'btn sm', onclick: () => measure(true) }, '↻ Messung wiederholen'));
+    } finally {
+      unsub();
+      running = false;
+    }
+    W.remoteActive = true;
+    if (!document.body.contains(banner) || W.stepIdx !== idx) return;
+    drawLive(liveBox, { ...r.live, ...r.values });
+    if (r.transient) {
+      // gehaltenes Minimum/Maximum weit weg von der ruhigen Anzeige: übernommener Wert wäre verfälscht
+      const [hk, lk] = group === 'RISO' ? ['RISO_MIN', 'RISO_LIVE'] : [`${group}_MAX`, `${group}_LIVE`];
+      banner.className = 'alert warn';
+      return fill(banner, h('b', {}, '⚠ Der Messwert war unruhig'), ` (${group === 'RISO' ? 'Minimum' : 'Maximum'} ${shown(hk, r.values[hk])}, Anzeige zuletzt ${shown(lk, r.live[lk])}) – wurde der Prüfling berührt? Der übernommene Wert hängt am ${group === 'RISO' ? 'Minimum' : 'Maximum'} und wäre verfälscht. `, h('button', { class: 'btn sm primary', onclick: () => measure(true) }, '↻ Messung wiederholen'), ' ', h('button', { class: 'btn sm', onclick: () => finish(r) }, 'Wert trotzdem übernehmen'));
+    }
+    finish(r);
+  };
+
   const countdown = () => {
     if (started || !alive()) return;
     if (n <= 0) return measure();
-    fill(banner, h('b', {}, `⚙ Messung startet automatisch in ${n} s`), ` – ${step.key === 'RSL' ? 'Sonde an das Schutzleiter-Teil halten, ' : ''}Prüfling nicht berühren. `, h('button', { class: 'btn sm primary', onclick: measure }, '▶ Sofort messen'), ' ', pause);
+    fill(banner, h('b', {}, `⚙ Messung startet automatisch in ${n} s`), ` – ${step.key === 'RSL' ? 'Sonde an das Schutzleiter-Teil halten, ' : ''}Prüfling nicht berühren. `, h('button', { class: 'btn sm primary', onclick: () => measure() }, '▶ Sofort messen'), ' ', pause);
     n -= 1;
     later(1000, countdown);
   };
+
+  // Vor der ersten Messung mit Prüfspannung (R_ISO 500 V, Ableitströme) einmal bestätigen lassen, dass niemand
+  // den Prüfling berührt – z. B. direkt nach der Sichtprüfung. R_SL misst mit der Sonde in der Hand.
+  if (step.key !== 'RSL' && !W.handsOff) {
+    banner.className = 'alert warn';
+    return fill(banner, h('b', {}, '⚡ Jetzt folgen die Messungen mit Prüfspannung'), ' (R_ISO mit 500 V). Prüfling, Klemme und Sonde nicht mehr berühren – danach misst das Programm automatisch weiter. ', h('button', { class: 'btn sm primary', onclick: () => ((W.handsOff = true), (banner.className = 'alert info'), countdown()) }, '▶ Hände weg – Messungen starten'), ' ', pause);
+  }
   later(100, countdown); // erst wenn der Schritt angezeigt wird (alive prüft, ob der Hinweis im Dokument steht)
 }
 
