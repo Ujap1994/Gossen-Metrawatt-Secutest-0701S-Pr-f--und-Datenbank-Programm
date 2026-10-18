@@ -324,15 +324,25 @@ test('Automatik R_SL misst beide Polungen', async () => {
   assert.ok(port.writes.indexOf(cmd('MES!10')) > port.writes.indexOf(cmd('MES!8')));
 });
 
-test('Funktionstest macht der Prüfer am SECUTEST: nur Fernsteuerung aus (sonst sind die Tasten gesperrt)', async () => {
+test('Funktionstest macht der Prüfer am SECUTEST: Fernsteuerung aus und Programm FUNCTION-TEST, keine Taste', async () => {
   const mgr = new SecutestManager();
   mgr.driver.opts.settleMs = 1;
-  const port = attach(mgr.driver, { 'TAS!R$7F': frame('.Yx$23'), 'TAS!r$9F': frame('.Yx$23') + '\x03' });
+  const port = attach(mgr.driver, { 'TAS!R$7F': frame('.Yx$23'), 'TAS!r$9F': frame('.Yx$23') + '\x03', [cmd('RST!1')]: frame('.Yx$23') });
   await mgr.driver.setRemote(true);
   const r = await mgr.remoteStart('FT');
   assert.equal(r.manual, true);
-  assert.equal(mgr.driver.remoteActive, false);
-  assert.deepEqual(port.writes, ['TAS!R$7F', 'TAS!r$9F'], 'kein Programmwechsel, keine Taste');
+  assert.equal(mgr.driver.remoteActive, false, 'sonst sind die Tasten gesperrt');
+  // nur Fernsteuerung aus brächte den SECUTEST an den Anfang seines Prüfprogramms zurück (am Gerät beobachtet)
+  assert.deepEqual(port.writes, ['TAS!R$7F', 'TAS!r$9F', cmd('RST!1')], 'kein TAS!5 – Netz an die Prüfdose legt der Prüfer');
+});
+
+test('Programm FUNCTION-TEST: vor Taste 14 keine Werte, danach zählt der Energiezähler', async () => {
+  const mgr = new SecutestManager();
+  mgr.driver.opts.settleMs = 1;
+  // am Gerät gemessen: 25 s nach RST!1 noch alles „----.“; nach Taste 14 Spannung und Energiezähler
+  const before = dev('WERTEx=58:----.V;56:----.A;52:----.W;57:----.VA;49:----.;55:----.xJ;59:----.Hz;64:----.mA;66:----.mA;67:----.mA;51:----.W;61:----.A');
+  attach(mgr.driver, { [FT_READ]: [before, FT_ON] });
+  assert.deepEqual([(await mgr.remoteRead('FT')).ftActive, (await mgr.remoteRead('FT')).ftActive], [false, true]);
 });
 
 test('Timeout ohne Gerät', async () => {

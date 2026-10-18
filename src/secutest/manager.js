@@ -334,9 +334,12 @@ class SecutestManager {
   }
 
   /**
-   * Funktionstest (PC-gesteuert): Den führt der Prüfer am SECUTEST durch (mehrere Tasten, Netz an die
-   * Prüfdose mit Taste 14). Dafür nur die Fernsteuerung abschalten – im Fernsteuermodus sperrt das Gerät
-   * seine Tasten. (Am Gerät geprüft: ^C beendet einen laufenden Funktionstest nicht, ein Programmwechsel per RST! schon.)
+   * Funktionstest (PC-gesteuert): Den führt der Prüfer am SECUTEST durch. Fernsteuerung aus (sonst sperrt
+   * das Gerät seine Tasten) und Programm FUNCTION-TEST wählen – nur die Fernsteuerung abzuschalten bringt
+   * das Gerät an den Anfang seines Prüfprogramms zurück, von dort käme man erst über dessen ganzen Ablauf
+   * zum Funktionstest. Danach stellt das Programm nichts mehr um; beendet wird am Gerät.
+   * (Am Gerät gemessen: vor Taste 14 meldet das Programm FUNCTION-TEST keine Werte, „bereit“ ist über die
+   * Schnittstelle nicht erkennbar; ^C beendet einen Funktionstest nicht.)
    */
   async releaseForFunctionTest() {
     const d = this.driver;
@@ -346,7 +349,8 @@ class SecutestManager {
       return { started: true };
     }
     if (d.remoteActive) await d.setRemote(false);
-    return { started: false, manual: true, message: 'Funktionstest bitte am SECUTEST durchführen – die Fernsteuerung ist aus, alle Tasten sind frei.' };
+    await d.setSwitch('FUNCTION-TEST');
+    return { started: false, manual: true, message: 'SECUTEST steht auf FUNCTION-TEST – sobald die Lampe (15) blinkt, mit Taste 14 starten.' };
   }
 
   /** confirm: Werte zum Übernehmen (zweimal gleich gelesen), sonst Live-Werte inkl. Anzeigewert */

@@ -77,7 +77,7 @@ test('Desktop-Programm: automatische SK-II-Prüfung, Funktionstest von Hand, Spe
 
     // Funktionstest am SECUTEST (simulierte Taste 14), Werte per Knopf
     await expect(page.getByText('Funktionstest bitte am SECUTEST durchführen')).toBeVisible();
-    await expect(page.getByText(/Funktionstest läuft gerade nicht/)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(/Funktionstest läuft noch nicht – am SECUTEST die Meldung mit ↵ bestätigen/)).toBeVisible({ timeout: 15_000 });
     expect((await api(page, 'POST', '/secutest/key', { key: 'FUNCTION_TEST' })).status).toBe(200);
     await expect(page.getByText(/Funktionstest läuft – „📥/)).toBeVisible({ timeout: 15_000 });
     await page.getByRole('button', { name: /Werte vom SECUTEST übernehmen/ }).click();
@@ -90,7 +90,7 @@ test('Desktop-Programm: automatische SK-II-Prüfung, Funktionstest von Hand, Spe
     await expect(page.getByText('Funktionstest noch aktiv')).toBeVisible();
     await page.locator('.modal').getByRole('button', { name: 'Abbrechen' }).click();
     expect((await api(page, 'POST', '/secutest/key', { key: 'FUNCTION_TEST' })).status).toBe(200);
-    await expect(page.getByText(/Funktionstest läuft gerade nicht/)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(/Funktionstest läuft noch nicht/)).toBeVisible({ timeout: 15_000 });
     await page.getByRole('button', { name: /^Weiter/ }).click();
 
     // Bewertung und Speichern

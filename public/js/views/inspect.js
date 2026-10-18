@@ -455,8 +455,14 @@ function prepPanel(step, body, redraw, next) {
       h('button', {
         class: 'btn primary',
         onclick: async () => {
-          clear(out).appendChild(h('div', { class: 'muted' }, 'Prüfe Anschluss …'));
           try {
+            // steht z. B. nach dem letzten Funktionstest noch auf FUNCTION-TEST: erst das Prüfprogramm wählen
+            if (W.auto) {
+              clear(out).appendChild(h('div', { class: 'muted' }, `Stelle SECUTEST auf „${sw}“ …`));
+              await post('/secutest/switch', { position: sw });
+              W.ftProgram = false;
+            }
+            clear(out).appendChild(h('div', { class: 'muted' }, 'Prüfe Anschluss …'));
             const r = await post('/secutest/precheck');
             W.remoteActive = true;
             const line = (ok, good, bad) => h('div', {}, ok ? '✅ ' : '❌ ', ok ? good : bad);
@@ -544,6 +550,13 @@ function takeValues(step, values, pointIdx) {
   }
 }
 
+/** Steht der SECUTEST nach dem Funktionstest noch auf FUNCTION-TEST: vor einer Messung zurück aufs Prüfprogramm */
+async function ensureTestProgram() {
+  if (!W.ftProgram) return;
+  await post('/secutest/switch', { position: W.proc.switchPos });
+  W.ftProgram = false;
+}
+
 /** Zweimal gleich gelesene Werte übernehmen (vertauschte Zeichen erkennt die Prüfsumme des Geräts nicht) */
 function takeConfirmed(step, r) {
   const vals = Object.fromEntries(Object.entries(r.values || {}).filter(([, v]) => v.value != null));
@@ -620,6 +633,7 @@ function measurePanel(step, body, redraw, next) {
       class: 'btn primary',
       onclick: async () => {
         try {
+          await ensureTestProgram();
           await post('/secutest/remote/start', { group });
           W.remoteActive = true;
           running = true;
@@ -745,6 +759,7 @@ function autoMeasureStep(step, { body, liveBox, drawPoints, next, redraw }) {
     const unsub = onSecutest((type, data) => type === 'measure' && data.group === group && document.body.contains(liveBox) && drawLive(liveBox, data.values));
     let r;
     try {
+      await ensureTestProgram();
       r = await post('/secutest/remote/auto', { group, fresh });
     } catch (e) {
       if (!document.body.contains(banner)) return;
@@ -855,16 +870,31 @@ function measurePanelFT(step, body, redraw) {
         const r = W.cfg.mode === 'secutest-pc' ? await get('/secutest/remote/read?group=FT') : await get('/secutest/live');
         lastLive = r.values || {};
         const any = Object.values(lastLive).some((v) => v.value != null);
-        statusLine.textContent = r.ftActive === false ? 'Funktionstest läuft gerade nicht – am SECUTEST starten (Netz an Prüfdose mit Taste FUNCTION-TEST (14), Lampe 15 leuchtet dann dauernd).' : any ? '⏱ Funktionstest läuft – „📥 Werte vom SECUTEST übernehmen“, solange er läuft.' : 'Noch keine Werte vom SECUTEST.';
+        // „bereit“ meldet das Gerät nicht (vor Taste 14 keine Werte) – „läuft“ zeigt der Energiezähler
+        statusLine.textContent = r.ftActive || (r.ftActive == null && any)
+          ? '⏱ Funktionstest läuft – „📥 Werte vom SECUTEST übernehmen“, solange er läuft.'
+          : 'Funktionstest läuft noch nicht – am SECUTEST die Meldung mit ↵ bestätigen, dann sobald die Lampe (15) blinkt mit Taste FUNCTION-TEST (14) starten.';
         drawLive(liveBox, lastLive);
       } catch (e) {
         statusLine.textContent = `⚠ ${e.message}`;
       }
     };
     if (W.cfg.mode === 'secutest-pc') {
-      // Den Funktionstest macht der Prüfer am Gerät (mehrere Tasten) – im Fernsteuermodus wären die Tasten gesperrt
-      body.prepend(h('div', { class: 'alert info' }, h('b', {}, '👉 Funktionstest bitte am SECUTEST durchführen.'), ' Die Fernsteuerung ist aus, alle Tasten am Gerät sind frei. Solange der Funktionstest läuft: „📥 Werte vom SECUTEST übernehmen“. Danach am Gerät beenden (Prüfling am eigenen Schalter ausschalten, Taste 14) und unten die Funktion beurteilen.'));
-      post('/secutest/remote/end').then(() => (W.remoteActive = false), (e) => toast(e.message, 'bad'));
+      // Den Funktionstest macht der Prüfer am Gerät. Das Programm stellt ihn einmal auf FUNCTION-TEST und gibt die
+      // Tasten frei (nur Fernsteuerung aus brächte das Gerät an den Anfang seines Prüfprogramms zurück).
+      body.prepend(
+        h('div', { class: 'alert info' },
+          h('b', {}, '👉 Funktionstest bitte am SECUTEST durchführen'), ' – das Programm stellt ihn auf FUNCTION-TEST und gibt alle Tasten frei:',
+          h('ol', { style: { margin: '6px 0 0', paddingLeft: '20px' } },
+            h('li', {}, 'Die Hinweismeldung am SECUTEST mit ↵ (Enter) bestätigen.'),
+            h('li', {}, 'Sobald die Lampe (15) blinkt: mit Taste FUNCTION-TEST (14) starten, Prüfling einschalten, Funktion prüfen.'),
+            h('li', {}, 'Solange er läuft: „📥 Werte vom SECUTEST übernehmen“.'),
+            h('li', {}, 'Prüfling am eigenen Schalter ausschalten, dann Taste 14 – und unten die Funktion beurteilen.')))
+      );
+      if (!W.ftProgram) {
+        W.ftProgram = true;
+        post('/secutest/remote/start', { group: 'FT' }).then(() => (W.remoteActive = false), (e) => ((W.ftProgram = false), toast(e.message, 'bad')));
+      }
     }
     every(2000, read);
     add(ctrl, h('button', { class: 'btn ok', onclick: async () => {
