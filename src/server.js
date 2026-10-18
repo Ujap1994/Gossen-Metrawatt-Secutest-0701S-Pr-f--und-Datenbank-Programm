@@ -72,10 +72,12 @@ function createApp({ sessions = new SessionManager(), scheduler = new ReminderSc
       return res.status(403).json({ error: `Zugriff über Host „${host}“ nicht erlaubt.` });
     }
     res.setHeader('Cache-Control', 'no-store');
-    // Veralteter Tab: Browser-Anfragen (Sec-Fetch-Site, sendet Node-fetch nicht) ohne die Kennung dieses Starts abweisen – sonst steuert
-    // ein Tab mit altem Programmcode das Gerät weiter und holt sich den Ereignis-Kanal zurück
+    // Veralteter Tab: Programm-Abfragen des Browsers (fetch/EventSource: Sec-Fetch-Mode cors bzw. same-origin; Node-fetch
+    // sendet kein Sec-Fetch-Site) ohne die Kennung dieses Starts abweisen – sonst steuert ein Tab mit altem Programmcode
+    // das Gerät weiter und holt sich den Ereignis-Kanal zurück. Links (Prüfprotokoll, Plaketten, Downloads) und Bilder bleiben frei.
     const ui = req.get('X-UI-Boot') || req.query.boot;
-    if (req.get('Sec-Fetch-Site') && req.path !== '/status' && ui !== bootId) {
+    const mode = req.get('Sec-Fetch-Mode');
+    if (req.get('Sec-Fetch-Site') && (mode === 'cors' || mode === 'same-origin') && req.path !== '/status' && ui !== bootId) {
       return res.status(409).json({ error: 'Der Prüfmanager wurde neu gestartet oder aktualisiert – bitte diese Seite neu laden.', code: 'RELOAD' });
     }
     next();
@@ -224,6 +226,49 @@ async function stopStaleInstance(port) {
   return false;
 }
 
+/** SECUTEST verbinden: Simulator oder automatische Suche samt Hot-Plug-Überwachung */
+function connectDevice(secutest, { simulator = false } = {}) {
+  if (simulator) {
+    secutest.connect({ simulator: true }).catch((e) => console.error('Simulator:', e.message));
+  } else if (secutest.cfg().autoConnect) {
+    secutest.startWatcher();
+    secutest.autoDetect({ connect: true }).then(
+      (r) => r.found && console.log(`  SECUTEST automatisch gefunden an ${r.found.path}`),
+      () => {}
+    );
+  }
+}
+
+/**
+ * Für das Desktop-Programm (Electron): Server nur für das eigene Fenster auf 127.0.0.1, ohne PID-Datei und
+ * ohne Browser. Fester Port, damit Einstellungen der Oberfläche (localStorage, z. B. Hell/Dunkel) erhalten
+ * bleiben; ist er belegt, ein freier. onQuit: „Programm beenden“ in der Oberfläche.
+ */
+async function startEmbedded({ simulator = false, port = 37017, onQuit = () => {} } = {}) {
+  const { app, sessions, secutest } = createApp({ onShutdown: (reason) => onQuit(reason) });
+  secutest.logToConsole = true;
+  const listenOn = (p) =>
+    new Promise((resolve, reject) => {
+      const s = app.listen(p, '127.0.0.1', () => resolve(s));
+      s.once('error', reject);
+    });
+  const server = await listenOn(port).catch((e) => (e.code === 'EADDRINUSE' ? listenOn(0) : Promise.reject(e)));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  console.log(`  Secutest Prüfmanager ${pkg.version} (Desktop) – ${url}, Konfiguration: ${config.appDataDir()}`);
+  connectDevice(secutest, { simulator });
+  let stopped = null;
+  const stop = (reason = 'Programm beendet') =>
+    (stopped ||= (async () => {
+      console.log(`${reason} …`);
+      sessions.closeAll(reason);
+      await secutest.disconnect().catch(() => {});
+      secutest.stopWatcher();
+      server.closeAllConnections?.(); // Ereignis-Kanäle (SSE) halten die Verbindung sonst offen
+      await new Promise((r) => server.close(() => r()));
+    })());
+  return { url, stop, secutest };
+}
+
 /** Prüft, ob Laufzeit und native Module funktionieren (für Release-Pakete) */
 async function selfTest() {
   const os = require('os');
@@ -290,15 +335,7 @@ async function main() {
       console.log('  Beenden mit Strg+C oder über „Programm beenden“ in der Oberfläche\n');
       if (args.open && !process.env.CI) openBrowser(url);
       // Schnittstelle erst nach erfolgreichem Start (sonst belegt eine zweite Instanz die Ports)
-      if (args.simulator) {
-        secutest.connect({ simulator: true }).catch((e) => console.error('Simulator:', e.message));
-      } else if (secutest.cfg().autoConnect) {
-        secutest.startWatcher();
-        secutest.autoDetect({ connect: true }).then(
-          (r) => r.found && console.log(`  SECUTEST automatisch gefunden an ${r.found.path}`),
-          () => {}
-        );
-      }
+      connectDevice(secutest, { simulator: args.simulator });
     });
     server.on('error', async (e) => {
       if (e.code === 'EADDRINUSE') {
@@ -328,4 +365,4 @@ async function main() {
 
 if (require.main === module) main();
 
-module.exports = { createApp, parseArgs };
+module.exports = { createApp, parseArgs, startEmbedded };

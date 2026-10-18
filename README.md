@@ -59,7 +59,7 @@ Es geht auch **ganz ohne Prüfgerät**: Messwerte lassen sich von Hand eintragen
 | **Serienprüfung** | Gleiche Geräte **mehrfach anlegen** und nacheinander prüfen; Einstellungen und (auf Wunsch) Sichtprüfung werden vom Vorgänger übernommen, am Ende Plaketten für alle |
 | **Prüfmittel** | **Kalibrier-Erinnerung** für das SECUTEST (ein-/ausschaltbar): Warnung vor Ablauf, Kalibrierstand im Prüfprotokoll |
 | **Erinnerungen** | Wahlweise per **E-Mail**, per **Kalender** oder beides – **zum Fälligkeitstermin je Gerät** oder **monatsweise gebündelt**. Kalendertermine (.ics) mit Alarm, automatische Kalendereinladungen nach Änderungen |
-| **Dokumentation** | Druckfertiges **Prüfprotokoll** (PDF über den Browser), **Prüfplaketten mit QR-Code**, Fotos und PDFs pro Gerät, Änderungsprotokoll, Export als CSV und JSON |
+| **Dokumentation** | Druckfertiges **Prüfprotokoll** (PDF über den Druckdialog), **Prüfplaketten mit QR-Code**, Fotos und PDFs pro Gerät, Änderungsprotokoll, Export als CSV und JSON |
 | **Plattformen** | Windows (x64, ARM64), macOS (Universal, Apple Silicon, Intel), Linux als .deb, .rpm, Arch, Alpine (.apk), Snap, Flatpak, AppImage und tar.gz (x64, ARM64, auch musl). Mit integriertem Node.js (Alpine/musl: Node.js der Distribution) |
 
 <table>
@@ -83,63 +83,61 @@ Es geht auch **ganz ohne Prüfgerät**: Messwerte lassen sich von Hand eintragen
 
 ### Fertige Pakete (empfohlen)
 
-Bei jeder Änderung baut und testet GitHub automatisch ein neues Release. Unter **[Releases → neueste Version](../../releases/latest)** lädst du das passende Paket herunter. Node.js ist überall **enthalten**, du musst nichts weiter installieren.
+Der Prüfmanager ist ein **Desktop-Programm mit eigenem Fenster** (Electron) für Windows, macOS und Linux. Bei jeder Änderung baut und testet GitHub automatisch ein neues Release. Unter **[Releases → neueste Version](../../releases/latest)** lädst du das passende Paket herunter – es ist nichts weiter zu installieren.
 
-Die folgenden Pakete werden bei jedem Release gebaut und getestet. Maßgeblich ist die **Download-Tabelle im jeweiligen Release**: Sie nennt genau die Dateien, die dort liegen. Fehlt ein Pflichtpaket, wird gar nicht veröffentlicht. Flatpak, Snap und das ARM64-AppImage entstehen in eigenen Build-Schritten; scheitert einer davon ausnahmsweise, steht das im Release unter „Diesmal nicht enthalten“.
+Maßgeblich ist die **Download-Tabelle im jeweiligen Release**: Sie nennt genau die Dateien, die dort liegen. Fehlt ein Pflichtpaket, wird gar nicht veröffentlicht. Snap und Flatpak entstehen in eigenen Build-Schritten; scheitert einer davon ausnahmsweise, steht das im Release unter „Diesmal nicht enthalten“.
 
 | System | Datei | Installation / Start |
 |---|---|---|
-| **Windows 10/11** (x64) | `…-windows-x64.zip` | Entpacken, dann **`Secutest-Pruefmanager.cmd`** doppelklicken |
-| **Windows 11 ARM64** (Snapdragon, Surface) | `…-windows-arm64.zip` | wie oben |
-| **macOS Universal** (Apple Silicon + Intel) | `…-macos-universal.zip` | Entpacken, dann **„Secutest Pruefmanager.app“** öffnen (beim ersten Mal Rechtsklick → *Öffnen*) |
-| macOS nur Apple Silicon / nur Intel | `…-macos-arm64.zip` / `…-macos-x64.zip` | wie oben, kleinerer Download |
-| **Ubuntu, Linux Mint, Debian, Pop!_OS** | `secutest-pruefmanager_…_amd64.deb` | `sudo apt install ./secutest-pruefmanager_…_amd64.deb` |
-| **Raspberry Pi OS / Ubuntu ARM64** | `…_arm64.deb` | `sudo apt install ./…_arm64.deb` |
-| **Fedora, openSUSE, RHEL/Alma/Rocky** | `secutest-pruefmanager-….x86_64.rpm` (ARM: `….aarch64.rpm`) | `sudo dnf install ./….rpm` bzw. `sudo zypper install --allow-unsigned-rpm ./….rpm` |
-| **Arch, Manjaro, EndeavourOS** | `secutest-pruefmanager-…-x86_64.pkg.tar.zst` (ARM: `…-aarch64…`) | `sudo pacman -U secutest-pruefmanager-…pkg.tar.zst` |
-| **Alpine Linux, postmarketOS** | `secutest-pruefmanager_…_x86_64.apk` (ARM: `…_aarch64.apk`) | `sudo apk add --allow-untrusted ./….apk` (installiert `nodejs` automatisch mit) |
-| **Snap** (Ubuntu und jede Distribution mit snapd) | `secutest-pruefmanager_…_amd64.snap` | `sudo snap install --dangerous --classic ./….snap` |
-| **Flatpak** (jede Distribution) | `…-x86_64.flatpak` | `flatpak install --user ./…flatpak`, Start über das Menü oder `flatpak run io.github.pruefmanager.Secutest` |
-| **AppImage** (jede Distribution) | `…-x86_64.AppImage` / `…-aarch64.AppImage` | `chmod +x ….AppImage` und doppelklicken |
-| Linux portabel | `…-linux-x64.tar.gz` / `…-linux-arm64.tar.gz` | `tar xzf …` und `./Secutest-Pruefmanager.sh` |
-| Linux portabel, musl (Void-musl, Chimera …) | `…-linux-musl-x64.tar.gz` / `…-linux-musl-arm64.tar.gz` | Node.js ≥ 20 installieren, dann `./Secutest-Pruefmanager.sh` |
+| **Windows 10/11** (x64) | `…-win-x64-setup.exe` | Doppelklick, Installation ohne Administratorrechte, Startmenü- und Desktop-Verknüpfung |
+| **Windows 11 ARM64** (Snapdragon, Surface) | `…-win-arm64-setup.exe` | wie oben |
+| Windows – ein Installer für beide | `…-win-setup.exe` | wählt x64 oder ARM64 selbst (größerer Download) |
+| Windows portabel | `…-win-x64-portable.exe` / `…-win-arm64-portable.exe` | ohne Installation starten, z. B. vom USB-Stick |
+| **macOS Universal** (Apple Silicon + Intel) | `…-mac-universal.dmg` | Öffnen, **„Secutest Pruefmanager“** in *Programme* ziehen (beim ersten Start Rechtsklick → *Öffnen*) |
+| macOS nur Apple Silicon / nur Intel | `…-mac-arm64.dmg` / `…-mac-x64.dmg` | wie oben, kleinerer Download (auch als `.zip`) |
+| **Ubuntu, Linux Mint, Debian, Pop!_OS** | `…-linux-amd64.deb` | `sudo apt install ./…-linux-amd64.deb` |
+| **Raspberry Pi OS / Ubuntu ARM64** | `…-linux-arm64.deb` | `sudo apt install ./…-linux-arm64.deb` |
+| **Fedora, openSUSE, RHEL/Alma/Rocky** | `…-linux-x86_64.rpm` (ARM: `…-linux-aarch64.rpm`) | `sudo dnf install ./….rpm` bzw. `sudo zypper install --allow-unsigned-rpm ./….rpm` |
+| **Arch, Manjaro, EndeavourOS** | `…-linux-x64.pacman` (ARM: `…-linux-arm64.pacman`) | `sudo pacman -U ./….pacman` |
+| **Snap** (jede Distribution mit snapd) | `…-linux-amd64.snap` | `sudo snap install --dangerous ./….snap` |
+| **Flatpak** (jede Distribution) | `….flatpak` | `flatpak install --user ./….flatpak` |
+| **AppImage** (jede Distribution) | `…-linux-x86_64.AppImage` / `…-linux-arm64.AppImage` | `chmod +x ….AppImage` und doppelklicken |
+| Linux portabel | `…-linux-x64.tar.gz` / `…-linux-arm64.tar.gz` | `tar xzf …` und `./secutest-pruefmanager` |
 
-* Der Browser öffnet sich automatisch unter **http://127.0.0.1:3701**. Das Programm ist nur auf deinem Rechner erreichbar.
-* **Ohne Prüfgerät ausprobieren:** `Simulator-ohne-Hardware` starten, im Linux-Menü „Mit Simulator starten“ wählen oder `secutest-pruefmanager --simulator` aufrufen.
-* **Beenden:** in der Oberfläche **⏻ Programm beenden** (Seitenleiste bzw. Anmeldeseite) oder Strg+C im Terminal. Ein zweiter Start öffnet einfach das bereits laufende Programm im Browser.
-* **Linux-Pakete** installieren nach `/opt/secutest-pruefmanager`, legen einen Startmenü-Eintrag mit Icon an und stellen den Befehl `secutest-pruefmanager` bereit. Updates einfach über das neue Paket installieren.
-* **Update (zip/tar.gz):** neues Paket entpacken. Deine Datenbanken liegen nicht im Programmordner und bleiben erhalten.
+* **Start:** wie jedes Programm über Startmenü, Dock bzw. Programme-Ordner. Es läuft immer nur **ein** Fenster; ein zweiter Start holt das vorhandene nach vorn.
+* **Beenden:** Fenster schließen oder **⏻ Programm beenden**. Die Datenbank wird dabei gesperrt und die SECUTEST-Verbindung getrennt. Bei einer nicht gespeicherten Prüfung fragt das Programm vorher nach.
+* **Ohne Prüfgerät ausprobieren:** `secutest-pruefmanager --simulator` (macOS: `open -a "Secutest Pruefmanager" --args --simulator`, Windows: Verknüpfung mit `--simulator` am Ende).
+* **Protokolldateien** (Fehlersuche): Menü *Hilfe → Protokolldateien öffnen*.
+* **Update:** einfach das neue Paket installieren. Deine Datenbanken und Einstellungen liegen nicht im Programmordner und bleiben erhalten – auch beim Umstieg von der früheren Browser-Version.
 * Prüfsummen aller Dateien stehen in `SHA256SUMS.txt`. Was sich geändert hat, steht im **[Änderungsprotokoll](CHANGELOG.md)**.
 
 <details>
 <summary><b>Hinweise zu Windows SmartScreen / macOS Gatekeeper / Linux-Rechten</b></summary>
 
-* **Windows:** Bei „Der Computer wurde durch Windows geschützt“ klickst du auf *Weitere Informationen* → *Trotzdem ausführen*. Fragt die Firewall nach, genügt *Abbrechen*, denn der Server lauscht nur auf 127.0.0.1.
+* **Windows:** Das Programm ist nicht signiert. Bei „Der Computer wurde durch Windows geschützt“ klickst du auf *Weitere Informationen* → *Trotzdem ausführen*.
 * **macOS:** Die App ist nicht von Apple signiert. Beim ersten Start: Rechtsklick → *Öffnen*, oder *Systemeinstellungen → Datenschutz & Sicherheit → Trotzdem öffnen*. Blockiert macOS weiterhin, einmalig im Terminal ausführen:
-  `xattr -dr com.apple.quarantine ~/Downloads/Secutest-Pruefmanager-…`
-  Die App läuft im Hintergrund, ohne Dock-Symbol, und wird über „Programm beenden“ geschlossen. `Secutest-Pruefmanager.command` startet sie stattdessen mit einem Terminalfenster samt Protokollausgabe.
-* **Linux:** Für den USB-RS232-Adapter muss dein Benutzer in der Gruppe `dialout` sein (Debian, Ubuntu, Mint, Fedora, openSUSE) bzw. in `uucp` (Arch, Manjaro): `sudo usermod -aG dialout $USER` (Alpine: `sudo addgroup $USER dialout`), danach ab- und wieder anmelden. Das Flatpak hat Zugriff auf serielle Geräte und den Benutzerordner (OneDrive/Dokumente).
+  `xattr -dr com.apple.quarantine "/Applications/Secutest Pruefmanager.app"`
+  Bitte die App vorher in den Programme-Ordner ziehen – direkt aus „Downloads“ gestartet, führt macOS sie aus einem schreibgeschützten Schattenordner aus.
+* **Linux:** Für den USB-RS232-Adapter muss dein Benutzer in der Gruppe `dialout` sein (Debian, Ubuntu, Mint, Fedora, openSUSE) bzw. in `uucp` (Arch, Manjaro): `sudo usermod -aG dialout $USER`, danach ab- und wieder anmelden.
 </details>
 
 ### Unterstützte Linux-Distributionen
 
-Voraussetzung ist **glibc ≥ 2.34** und **libstdc++ aus GCC ≥ 11**; das braucht das mitgelieferte SQLCipher-Modul. Bei älteren Systemen verweigern `.deb` und `.rpm` die Installation mit einem klaren Hinweis. Dort hilft das **Flatpak**, denn es bringt seine eigenen Bibliotheken mit. Für musl-Systeme (Alpine, Void-musl) gibt es eigene Pakete, die das Node.js der Distribution verwenden.
+Voraussetzung ist **glibc ≥ 2.34** und **libstdc++ aus GCC ≥ 11** (für das mitgelieferte SQLCipher-Modul) sowie eine grafische Oberfläche. Auf älteren Systemen hilft das **Flatpak**, denn es bringt seine eigenen Bibliotheken mit. Electron gibt es nur für glibc-Systeme; musl-Distributionen (Alpine, Void-musl) werden daher nicht mehr unterstützt.
 
 | Distribution | Mindestversion | Paket | getestet |
 |---|---|---|---|
 | Ubuntu (inkl. Kubuntu, Xubuntu …) | **22.04 LTS** | `.deb` | ✅ 22.04, 24.04 |
 | Linux Mint | **21** | `.deb` | (basiert auf Ubuntu 22.04/24.04) |
-| Debian | **12 „Bookworm“** | `.deb` | ✅ 12 (11 ❌ zu alt → Flatpak) |
-| Pop!_OS, elementary OS, Zorin OS, KDE neon | 22.04-Basis (Pop!_OS 22.04, elementary 7, Zorin 17) | `.deb` | – |
-| Raspberry Pi OS **64-Bit** | **12 „Bookworm“** | `_arm64.deb` | ✅ ARM64-CI (Ubuntu) |
-| Fedora (Workstation, KDE, Silverblue → Flatpak) | **35** | `.rpm` | ✅ aktuelle Version |
-| RHEL, AlmaLinux, Rocky Linux, CentOS Stream | **9** | `.rpm` | ✅ Rocky 9 (8 ❌ zu alt → Flatpak) |
-| openSUSE | **Tumbleweed**, Leap **16** | `.rpm` | ✅ Tumbleweed (Leap 15 → Flatpak) |
-| Arch Linux, Manjaro, EndeavourOS, Garuda | rollierend | `.pkg.tar.zst` | ✅ aktuell |
-| Alpine Linux, postmarketOS | Alpine **3.19** (Node.js ≥ 20) | `.apk` | ✅ aktuell (x64, ARM64) |
-| Ubuntu Core / Distributionen mit snapd | snapd installiert | `.snap` | Snap-CI |
+| Debian | **12 „Bookworm“** | `.deb` | ✅ 12 |
+| Pop!_OS, elementary OS, Zorin OS, KDE neon | 22.04-Basis | `.deb` | – |
+| Raspberry Pi OS **64-Bit** | **12 „Bookworm“** | `-linux-arm64.deb` | ✅ ARM64-CI (Ubuntu) |
+| Fedora | **35** | `.rpm` | ✅ aktuelle Version |
+| RHEL, AlmaLinux, Rocky Linux, CentOS Stream | **9** | `.rpm` | ✅ Rocky 9 |
+| openSUSE | **Tumbleweed**, Leap **16** | `.rpm` | ✅ Tumbleweed |
+| Arch Linux, Manjaro, EndeavourOS, Garuda | rollierend | `.pacman` | ✅ aktuell |
+| Distributionen mit snapd | snapd installiert | `.snap` | Snap-CI |
 | Andere glibc-Distributionen (Gentoo, Solus, Void-glibc, Slackware 15+) | glibc ≥ 2.34 | `.AppImage` / `.tar.gz` | – |
-| Void-musl, Chimera und andere musl-Systeme | Node.js ≥ 20 | `linux-musl-….tar.gz` | ✅ musl-Tarball (Alpine-Container) |
 | Ältere Systeme, NixOS, unveränderliche Systeme (Silverblue, SteamOS) | Flatpak installiert | `.flatpak` | Flatpak-CI |
 | ChromeOS (Linux-Umgebung) | Debian 12 | `.deb` | – |
 
@@ -153,12 +151,14 @@ Voraussetzung: [Node.js](https://nodejs.org) ab Version 20.
 git clone <URL dieses Repositorys>
 cd <Ordner>
 npm install
-npm start            # normal starten
-npm run simulator    # mit simuliertem SECUTEST
-npm test             # Tests
+npm run app            # Desktop-Programm
+npm run app:simulator  # mit simuliertem SECUTEST
+npm test               # Unit- und Integrationstests
+npm run test:e2e       # Oberfläche im Desktop-Programm (Playwright, Simulator)
+npm run dist:mac       # Pakete bauen (dist/electron/), ebenso dist:win, dist:linux
 ```
 
-Optionen: `--port 3701`, `--host 127.0.0.1`, `--simulator`, `--no-open`, `--selftest`.
+Ohne Fenster im Browser (z. B. zur Entwicklung): `npm start` bzw. `npm run simulator`, Optionen `--port 3701`, `--host 127.0.0.1`, `--simulator`, `--no-open`, `--selftest`.
 
 ---
 
@@ -442,7 +442,7 @@ Unter *Einstellungen → Erinnerungen* legst du fest, **wie** und **wann** erinn
 
 ## Protokolle, Prüfplaketten, Export
 
-* **Prüfprotokoll** pro Prüfung mit Auftraggeber, Prüfer, Prüfling, Norm, Ablauf, Messgerät, Sichtprüfung, allen Messwerten samt Grenzwerten, Funktionstest, Gesamtergebnis, Maßnahme, nächstem Termin und Unterschriftsfeld. Im Browser drucken oder als PDF speichern.
+* **Prüfprotokoll** pro Prüfung mit Auftraggeber, Prüfer, Prüfling, Norm, Ablauf, Messgerät, Sichtprüfung, allen Messwerten samt Grenzwerten, Funktionstest, Gesamtergebnis, Maßnahme, nächstem Termin und Unterschriftsfeld. Drucken oder über den Druckdialog als PDF speichern.
 * **Prüfplaketten** (62 × 34 mm) mit Inventarnummer, Prüfdatum, nächster Prüfung (MM/JJJJ) und QR-Code, zum Ausdrucken auf Etiketten.
 * **Fotos & PDFs** pro Gerät (Typschild, Mängel), verschlüsselt gespeichert und automatisch verkleinert.
 * **Export:** CSV (Excel) und JSON (komplette Daten). Dazu ein **Änderungsprotokoll** aller Aktionen.
@@ -480,17 +480,19 @@ src/
 public/                Oberfläche (HTML/CSS/JavaScript-Module, ohne Build-Schritt)
   js/illustrations.js  SVG-Grafiken der Prüfschritte
   js/views/scan.js     QR-Scanner für Prüfplaketten (Kamera, Handscanner, Foto)
-scripts/               build-release.js (portable Pakete), build-linux-packages.js (deb/rpm/Arch/Alpine/AppImage/Snap),
-                       release-notes.js, send-reminders.js
-packaging/             Icons, Linux-Desktop-Eintrag, nfpm-Konfigurationen (glibc + Alpine), Flatpak-Manifest
-test/                  Tests (node:test) – Protokoll, TOTP, Grenzwerte, DB, Simulator, API
+electron/main.js       Desktop-Programm: Fenster, Einzelinstanz, Menü, Kamera-Freigabe, Protokolldatei
+build/                 Programm-Icons für die Pakete (aus packaging/icons)
+scripts/               release-notes.js, selftest-packaged.js (Selbsttest im gepackten Programm), send-reminders.js
+packaging/icons/       Icon als SVG und PNG in allen Größen
+test/                  Tests (node:test) – Protokoll, Mitschnitte des echten Geräts, TOTP, Grenzwerte, DB, Simulator, API
+e2e/                   End-to-End-Tests des Desktop-Programms (Playwright + Electron, Simulator)
 ```
 
-* **Technik:** Node.js (JavaScript, kein Build-Schritt), Express, better-sqlite3-multiple-ciphers (SQLCipher), serialport, nodemailer, qrcode, jsQR (QR-Erkennung für Browser ohne eingebauten BarcodeDetector, Apache-2.0).
-* **Tests:** `npm test` (47 Tests). `npm run simulator` startet das Programm mit simuliertem SECUTEST und mehreren Szenarien, auch mit Fehlerfällen.
-* **CI:** Jeder Pull Request wird unter Windows, macOS und Linux getestet (`.github/workflows/ci.yml`).
-* **Releases:** Jeder Push bzw. Merge auf `main` löst `.github/workflows/release.yml` aus. Ablauf: Tests → portable Pakete für alle Plattformen bauen (`scripts/build-release.js`) → Linux-Pakete bauen (`scripts/build-linux-packages.js` mit [nfpm](https://nfpm.goreleaser.com) und appimagetool, Flatpak mit flatpak-builder, Snap mit snapcraft) → **Selbsttests** auf Windows, macOS und Linux, Installation in Ubuntu-, Debian-, Fedora-, Rocky-, openSUSE-, Arch- und Alpine-Containern, zusätzlich auf ARM64 und Intel-Mac → Veröffentlichung als GitHub-Release `v<Version>-build.<Nr>`. Die Release-Notizen kommen samt Bildern aus dem obersten Abschnitt von [`CHANGELOG.md`](CHANGELOG.md) (`scripts/release-notes.js`). Pull Requests, die das Paketieren ändern, durchlaufen dieselbe Kette ohne Veröffentlichung.
-* Pakete lokal bauen: `node scripts/build-release.js` (alle Plattformen) bzw. `--only linux-x64 --local-node`, danach `NFPM=/pfad/zu/nfpm node scripts/build-linux-packages.js`.
+* **Technik:** Electron (Desktop-Programm), Node.js (JavaScript, kein Build-Schritt), Express (nur 127.0.0.1, im Programm eingebettet), better-sqlite3-multiple-ciphers (SQLCipher), serialport, nodemailer, qrcode, jsQR (QR-Erkennung für Browser ohne eingebauten BarcodeDetector, Apache-2.0).
+* **Tests:** `npm test` (77 Tests, darunter Mitschnitte des echten SECUTEST als Replay) und `npm run test:e2e` (Prüfdurchlauf im Desktop-Programm). `npm run app:simulator` startet das Programm mit simuliertem SECUTEST und mehreren Szenarien, auch mit Fehlerfällen.
+* **CI:** Jeder Pull Request wird unter Windows, macOS und Linux getestet – Unit-Tests, Selbsttest und die komplette Oberfläche im Desktop-Programm mit simuliertem SECUTEST (`.github/workflows/ci.yml`).
+* **Releases:** Jeder Push bzw. Merge auf `main` löst `.github/workflows/release.yml` aus. Ablauf: Tests → Pakete mit [electron-builder](https://www.electron.build) auf echten Windows-, macOS- und Linux-Rechnern bauen → **jedes gepackte Programm testen** (Selbsttest von SQLCipher, serialport und Simulator sowie ein kompletter Prüfdurchlauf in der Oberfläche) → Installation in Ubuntu-, Debian-, Fedora-, Rocky-, openSUSE- und Arch-Containern, zusätzlich auf ARM64 und Intel-Mac → Snap und Flatpak → Veröffentlichung als GitHub-Release `v<Version>-build.<Nr>`. Die Release-Notizen kommen samt Bildern aus dem obersten Abschnitt von [`CHANGELOG.md`](CHANGELOG.md) (`scripts/release-notes.js`). Pull Requests, die das Paketieren ändern, durchlaufen dieselbe Kette ohne Veröffentlichung.
+* Pakete lokal bauen: `npm run dist:mac` / `dist:win` / `dist:linux` (Windows-Pakete lassen sich auch auf macOS bauen; rpm braucht `rpmbuild`). Gepacktes Programm testen: `node scripts/selftest-packaged.js <Programmordner>` und `SECUTEST_E2E_APP=<Programmdatei> npm run test:e2e`.
 * **Bei jeder Änderung:** einen Abschnitt in `CHANGELOG.md` mit Beschreibung und Screenshots (`docs/images/`) ergänzen und die Version in `package.json` anheben.
 
 Beiträge sind willkommen. Bitte vor einem Pull Request `npm test` ausführen.

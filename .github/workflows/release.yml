@@ -1,15 +1,18 @@
 name: Release
 
-# Bei jeder Änderung auf main: testen, Pakete für alle Plattformen bauen, auf echten
-# Systemen/Containern starten (Selbsttest) und als GitHub-Release veröffentlichen.
+# Bei jeder Änderung auf main: testen, das Desktop-Programm (Electron) für alle Plattformen bauen,
+# jedes gepackte Programm testen (Selbsttest + Oberfläche mit Simulator), die Linux-Pakete in
+# Distributionen installieren und als GitHub-Release veröffentlichen.
 # Pull Requests, die das Paketieren ändern, durchlaufen alles außer der Veröffentlichung.
 on:
   push:
     branches: [main]
   pull_request:
     paths:
-      - 'packaging/**'
-      - 'scripts/build-*.js'
+      - 'electron/**'
+      - 'build/**'
+      - 'e2e/**'
+      - 'scripts/selftest-packaged.js'
       - 'scripts/release-notes.js'
       - '.github/workflows/release.yml'
       - 'package.json'
@@ -28,10 +31,29 @@ jobs:
     uses: ./.github/workflows/ci.yml
 
   build:
+    name: Pakete ${{ matrix.name }}
     needs: test
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.v.outputs.version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-latest
+            args: --mac
+            app: 'dist/electron/mac-arm64/Secutest Pruefmanager.app'
+            exe: 'dist/electron/mac-arm64/Secutest Pruefmanager.app/Contents/MacOS/Secutest Pruefmanager'
+          - name: Windows
+            os: windows-latest
+            args: --win
+            app: dist/electron/win-unpacked
+            exe: 'dist/electron/win-unpacked/Secutest Pruefmanager.exe'
+          - name: Linux
+            os: ubuntu-latest
+            args: --linux
+            app: dist/electron/linux-unpacked
+            exe: dist/electron/linux-unpacked/secutest-pruefmanager
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -39,137 +61,87 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Portable Pakete (Windows x64/ARM64, macOS arm64/Intel/Universal, Linux x64/ARM64, Linux musl)
-        run: node scripts/build-release.js
-      - name: nfpm installieren
-        run: |
-          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
-          echo "NFPM=$(go env GOPATH)/bin/nfpm" >> "$GITHUB_ENV"
-      - name: Linux-Pakete (deb, rpm, Arch, Alpine, AppImage)
-        run: node scripts/build-linux-packages.js
-      - id: v
-        run: echo "version=$(cat dist/release/VERSION.txt)" >> "$GITHUB_OUTPUT"
-      - name: Flatpak- und Snap-Quellen packen
-        run: |
-          tar -czf flatpak-src.tar.gz -C dist flatpak-src
-          tar -czf snap-src.tar.gz -C dist snap
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release
-          path: dist/release/
-          retention-days: 7
-      - uses: actions/upload-artifact@v4
-        with:
-          name: flatpak-src
-          path: flatpak-src.tar.gz
-          retention-days: 3
-      - uses: actions/upload-artifact@v4
-        with:
-          name: snap-src
-          path: snap-src.tar.gz
-          retention-days: 3
-
-  flatpak:
-    name: Flatpak bauen & testen
-    needs: build
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: flatpak-src
-      - run: mkdir -p dist && tar -xzf flatpak-src.tar.gz -C dist
-      - name: flatpak-builder installieren
+      - run: node node_modules/electron/install.js
+      - name: Linux – Werkzeuge für rpm/pacman, Sandbox für Electron
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq flatpak flatpak-builder
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          sudo apt-get install -y -qq rpm libarchive-tools
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Bauen
-        run: |
-          flatpak-builder --user --install-deps-from=flathub --force-clean --repo=repo build-dir packaging/flatpak/io.github.pruefmanager.Secutest.yml
-          mkdir -p out
-          flatpak build-bundle repo "out/Secutest-Pruefmanager-${{ needs.build.outputs.version }}-x86_64.flatpak" io.github.pruefmanager.Secutest --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo
-      - name: Installieren & Selbsttest
-        run: |
-          flatpak install --user -y --noninteractive "out/Secutest-Pruefmanager-${{ needs.build.outputs.version }}-x86_64.flatpak"
-          flatpak run io.github.pruefmanager.Secutest --selftest
-      - uses: actions/upload-artifact@v4
-        with:
-          name: flatpak
-          path: out/*.flatpak
-          retention-days: 7
-
-  snap:
-    name: Snap bauen & testen
-    needs: build
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    timeout-minutes: 30
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: snap-src
-      - run: tar -xzf snap-src.tar.gz
-      - uses: snapcore/action-build@v1
-        id: snapcraft
-        with:
-          path: snap
-      - name: Installieren & Selbsttest
         env:
-          SNAPFILE: ${{ steps.snapcraft.outputs.snap }}
-        run: |
-          [ -f "$SNAPFILE" ] || SNAPFILE="snap/$SNAPFILE"
-          sudo snap install --dangerous --classic "$SNAPFILE"
-          /snap/bin/secutest-pruefmanager --selftest
-          mkdir -p out && cp "$SNAPFILE" out/
-      - uses: actions/upload-artifact@v4
-        with:
-          name: snap
-          path: out/*.snap
-          retention-days: 7
-
-  smoke:
-    name: Selbsttest ${{ matrix.target }}
-    needs: build
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { os: windows-latest, target: windows-x64 }
-          - { os: macos-latest, target: macos-arm64 }
-          - { os: macos-latest, target: macos-universal }
-          - { os: ubuntu-latest, target: linux-x64 }
-          - { os: ubuntu-latest, target: appimage-x86_64 }
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: release
-          path: release
-      - name: Selbsttest
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder ${{ matrix.args }} --publish never
+      - name: Selbsttest im gepackten Programm
+        run: node scripts/selftest-packaged.js "${{ matrix.app }}"
+      - name: Oberfläche im gepackten Programm (Simulator)
         shell: bash
         env:
-          V: ${{ needs.build.outputs.version }}
-          T: ${{ matrix.target }}
+          SECUTEST_E2E_APP: ${{ github.workspace }}/${{ matrix.exe }}
+        run: if [ "$RUNNER_OS" = Linux ]; then xvfb-run -a npx playwright test; else npx playwright test; fi
+      - name: Pakete sammeln
+        shell: bash
         run: |
-          set -e
-          case "$T" in
-            windows-*)
-              pwsh -Command "Expand-Archive -Path release/Secutest-Pruefmanager-$V-$T.zip -DestinationPath bundle"
-              cd "bundle/Secutest-Pruefmanager-$V-$T/app" && ../runtime/node.exe src/server.js --selftest ;;
-            macos-*)
-              mkdir bundle && unzip -q "release/Secutest-Pruefmanager-$V-$T.zip" -d bundle
-              "bundle/Secutest-Pruefmanager-$V-$T/Secutest Pruefmanager.app/Contents/MacOS/secutest-pruefmanager" --selftest
-              "bundle/Secutest-Pruefmanager-$V-$T/Secutest-Pruefmanager.command" --selftest ;;
-            linux-*)
-              mkdir bundle && tar -xzf "release/Secutest-Pruefmanager-$V-$T.tar.gz" -C bundle
-              "bundle/Secutest-Pruefmanager-$V-$T/Secutest-Pruefmanager.sh" --selftest ;;
-            appimage-*)
-              chmod +x release/*-x86_64.AppImage
-              "release/Secutest-Pruefmanager-$V-x86_64.AppImage" --appimage-extract-and-run --selftest ;;
-          esac
+          mkdir -p out
+          shopt -s nullglob
+          cp dist/electron/*.{dmg,zip,exe,AppImage,deb,rpm,pacman,tar.gz} out/
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-${{ matrix.name }}
+          path: out/
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-${{ matrix.name }}
+          path: |
+            dist/e2e-results/
+            dist/e2e-screenshots/
+          retention-days: 7
+
+  # Snap und Flatpak: eigene Werkzeuge, dürfen ausnahmsweise scheitern (dann im Release als „nicht enthalten“ vermerkt)
+  snap-flatpak:
+    name: Pakete Snap & Flatpak
+    needs: test
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node node_modules/electron/install.js
+      - name: Werkzeuge
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq flatpak flatpak-builder squashfs-tools
+          sudo snap install snapcraft --classic
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+      - name: Snap bauen
+        continue-on-error: true
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --linux snap --x64 --publish never
+      - name: Flatpak bauen
+        continue-on-error: true
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --linux flatpak --x64 --publish never
+      - name: Pakete sammeln
+        run: |
+          mkdir -p out
+          cp dist/electron/*.snap dist/electron/*.flatpak out/ 2>/dev/null || true
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-SnapFlatpak
+          path: out/
+          if-no-files-found: ignore
+          retention-days: 7
 
   distros:
     name: Installation ${{ matrix.name }}
@@ -179,110 +151,94 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: Ubuntu 24.04, image: 'ubuntu:24.04', cmd: 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq /r/secutest-pruefmanager_*_amd64.deb' }
-          - { name: Ubuntu 22.04 (Mindestversion), image: 'ubuntu:22.04', cmd: 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq /r/secutest-pruefmanager_*_amd64.deb' }
-          - { name: Debian 12, image: 'debian:12', cmd: 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq /r/secutest-pruefmanager_*_amd64.deb' }
-          - { name: Fedora, image: 'fedora:latest', cmd: 'dnf install -y -q /r/secutest-pruefmanager-*.x86_64.rpm' }
-          - { name: Rocky Linux 9 (Mindestversion), image: 'rockylinux:9', cmd: 'dnf install -y -q /r/secutest-pruefmanager-*.x86_64.rpm' }
+          - { name: Ubuntu 24.04, image: 'ubuntu:24.04', cmd: 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq /r/*-linux-amd64.deb' }
+          - { name: Ubuntu 22.04 (Mindestversion), image: 'ubuntu:22.04', cmd: 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq /r/*-linux-amd64.deb' }
+          - { name: Debian 12, image: 'debian:12', cmd: 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq /r/*-linux-amd64.deb' }
+          - { name: Fedora, image: 'fedora:latest', cmd: 'dnf install -y -q /r/*-linux-x86_64.rpm' }
+          - { name: Rocky Linux 9 (Mindestversion), image: 'rockylinux:9', cmd: 'dnf install -y -q /r/*-linux-x86_64.rpm' }
           # zypper-Code 106: ein Spiegelserver war nicht erreichbar, das Paket ist trotzdem installiert (der Selbsttest prüft das)
-          - { name: openSUSE Tumbleweed, image: 'opensuse/tumbleweed', cmd: 'zypper --non-interactive --no-gpg-checks install --allow-unsigned-rpm /r/secutest-pruefmanager-*.x86_64.rpm || [ \$? -eq 106 ]' }
-          - { name: Arch Linux, image: 'archlinux:latest', cmd: 'pacman -U --noconfirm /r/secutest-pruefmanager-*-x86_64.pkg.tar.zst' }
-          - { name: Alpine Linux, image: 'alpine:latest', cmd: 'apk add --no-cache --allow-untrusted /r/secutest-pruefmanager_*_x86_64.apk' }
+          - { name: openSUSE Tumbleweed, image: 'opensuse/tumbleweed', cmd: 'zypper --non-interactive --no-gpg-checks install --allow-unsigned-rpm /r/*-linux-x86_64.rpm || [ \$? -eq 106 ]' }
+          - { name: Arch Linux, image: 'archlinux:latest', cmd: 'pacman -Sy --noconfirm && pacman -U --noconfirm /r/*-linux-x64.pacman' }
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: release
+          name: pkg-Linux
           path: release
+      # ohne Bildschirm: Selbsttest im Node-Modus des installierten Programms (SQLCipher, serialport, Simulator)
       - name: Installieren & Selbsttest
-        run: docker run --rm -v "$PWD/release:/r" "${{ matrix.image }}" sh -c "${{ matrix.cmd }} && secutest-pruefmanager --selftest && test -f /usr/share/applications/secutest-pruefmanager.desktop"
+        run: >
+          docker run --rm -v "$PWD/release:/r" "${{ matrix.image }}" sh -c "${{ matrix.cmd }}
+          && test -x /usr/bin/secutest-pruefmanager
+          && test -f /usr/share/applications/secutest-pruefmanager.desktop
+          && ELECTRON_RUN_AS_NODE=1 '/opt/Secutest Pruefmanager/secutest-pruefmanager' '/opt/Secutest Pruefmanager/resources/app.asar/src/server.js' --selftest"
 
-  # Zusätzliche Tests auf ARM- und Intel-Hardware (blockieren das Release nicht)
+  # Zusätzlich auf ARM- und Intel-Hardware (blockiert das Release nicht)
   smoke-extra:
     name: Selbsttest ${{ matrix.target }} (zusätzlich)
     needs: build
     continue-on-error: true
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-24.04-arm, target: linux-arm64 }
-          - { os: windows-11-arm, target: windows-arm64 }
-          - { os: macos-15-intel, target: macos-x64 }
+          - { os: ubuntu-24.04-arm, target: linux-arm64, pkg: Linux }
+          - { os: windows-11-arm, target: windows-arm64, pkg: Windows }
+          - { os: macos-15-intel, target: macos-x64, pkg: macOS }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: release
+          name: pkg-${{ matrix.pkg }}
           path: release
       - name: Selbsttest
         shell: bash
         env:
-          V: ${{ needs.build.outputs.version }}
           T: ${{ matrix.target }}
         run: |
           set -e
           case "$T" in
-            windows-*)
-              pwsh -Command "Expand-Archive -Path release/Secutest-Pruefmanager-$V-$T.zip -DestinationPath bundle"
-              cd "bundle/Secutest-Pruefmanager-$V-$T/app" && ../runtime/node.exe src/server.js --selftest ;;
-            macos-*)
-              mkdir bundle && unzip -q "release/Secutest-Pruefmanager-$V-$T.zip" -d bundle
-              "bundle/Secutest-Pruefmanager-$V-$T/Secutest Pruefmanager.app/Contents/MacOS/secutest-pruefmanager" --selftest
-              mkdir uni && unzip -q "release/Secutest-Pruefmanager-$V-macos-universal.zip" -d uni
-              "uni/Secutest-Pruefmanager-$V-macos-universal/Secutest Pruefmanager.app/Contents/MacOS/secutest-pruefmanager" --selftest ;;
-            linux-*)
-              mkdir bundle && tar -xzf "release/Secutest-Pruefmanager-$V-$T.tar.gz" -C bundle
-              "bundle/Secutest-Pruefmanager-$V-$T/Secutest-Pruefmanager.sh" --selftest
-              docker run --rm -v "$PWD/release:/r" ubuntu:24.04 sh -c "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq /r/secutest-pruefmanager_*_arm64.deb && secutest-pruefmanager --selftest"
-              docker run --rm -v "$PWD/release:/r" alpine:latest sh -c "apk add --no-cache --allow-untrusted /r/secutest-pruefmanager_*_aarch64.apk && secutest-pruefmanager --selftest"
-              chmod +x release/*-aarch64.AppImage && release/Secutest-Pruefmanager-$V-aarch64.AppImage --appimage-extract-and-run --selftest ;;
+            linux-arm64)
+              docker run --rm -v "$PWD/release:/r" ubuntu:24.04 sh -c "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq /r/*-linux-arm64.deb && ELECTRON_RUN_AS_NODE=1 '/opt/Secutest Pruefmanager/secutest-pruefmanager' '/opt/Secutest Pruefmanager/resources/app.asar/src/server.js' --selftest"
+              chmod +x release/*-linux-arm64.AppImage && cd /tmp && "$GITHUB_WORKSPACE"/release/*-linux-arm64.AppImage --appimage-extract >/dev/null && node "$GITHUB_WORKSPACE/scripts/selftest-packaged.js" squashfs-root ;;
+            windows-arm64)
+              pwsh -Command "Start-Process -Wait -FilePath (Get-Item release/*-win-arm64-setup.exe).FullName -ArgumentList '/S','/D=C:\SP'"
+              node scripts/selftest-packaged.js 'C:\SP' ;;
+            macos-x64)
+              mkdir app && ditto -x -k release/*-mac-x64.zip app && node scripts/selftest-packaged.js "app/Secutest Pruefmanager.app"
+              mkdir uni && ditto -x -k release/*-mac-universal.zip uni && node scripts/selftest-packaged.js "uni/Secutest Pruefmanager.app" ;;
           esac
 
   publish:
     name: Pakete prüfen & veröffentlichen
-    needs: [build, smoke, distros, flatpak, snap]
-    if: ${{ always() && needs.build.result == 'success' && needs.smoke.result == 'success' && needs.distros.result == 'success' }}
+    needs: [build, distros, snap-flatpak]
+    if: ${{ always() && needs.build.result == 'success' && needs.distros.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: release
+          pattern: pkg-*
           path: release
-      - name: Flatpak übernehmen (falls gebaut)
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: flatpak
-          path: release
-      - name: Snap übernehmen (falls gebaut)
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: snap
-          path: release
-      - name: Prüfsummen & Release-Notizen
-        env:
-          VERSION: ${{ needs.build.outputs.version }}
+          merge-multiple: true
+      - name: Version, Prüfsummen & Release-Notizen
+        id: v
         run: |
-          cd release
-          for f in *.flatpak *.snap; do [ -f "$f" ] && sha256sum "$f" >> SHA256SUMS.txt; done || true
-          cd ..
+          VERSION="$(node -p "require('./package.json').version")-build.${{ github.run_number }}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          (cd release && sha256sum * > SHA256SUMS.txt)
           node scripts/release-notes.js "$VERSION" release > notes.md
           cat notes.md
       # Nur veröffentlichen, wenn alle Pflichtpakete gebaut wurden – die Download-Tabelle nennt ausschließlich vorhandene Dateien
       - name: Vollständigkeit prüfen
-        env:
-          VERSION: ${{ needs.build.outputs.version }}
-        run: node scripts/release-notes.js "$VERSION" release --check
+        run: node scripts/release-notes.js "${{ steps.v.outputs.version }}" release --check
       - name: GitHub-Release veröffentlichen
         if: ${{ github.event_name != 'pull_request' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ needs.build.outputs.version }}
+          VERSION: ${{ steps.v.outputs.version }}
         run: |
-          rm -f release/VERSION.txt
           gh release create "v${VERSION}" release/* \
             --repo "${{ github.repository }}" \
             --target "${{ github.sha }}" \

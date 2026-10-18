@@ -156,7 +156,7 @@ test('Tab mit veraltetem Programmcode (vor Neustart/Update) wird abgewiesen', as
   try {
     const { boot } = await fetch(`${base}/status`).then((r) => r.json());
     assert.match(boot, /^[0-9a-f]{12}$/);
-    // Browser-Anfrage ohne bzw. mit alter Kennung
+    // Programm-Abfrage des Browsers ohne bzw. mit alter Kennung
     for (const h of [{}, { 'X-UI-Boot': 'abcdef123456' }]) {
       const r = await fetch(`${base}/meta`, { headers: { 'Sec-Fetch-Site': 'same-origin', ...h } });
       assert.equal(r.status, 409);
@@ -164,6 +164,11 @@ test('Tab mit veraltetem Programmcode (vor Neustart/Update) wird abgewiesen', as
     }
     // Ereignis-Kanal alter Tabs (EventSource kann keine Header setzen)
     assert.equal((await fetch(`${base}/secutest/events`, { headers: { 'Sec-Fetch-Site': 'same-origin' } })).status, 409);
+    // Links (Prüfprotokoll, Plaketten, Downloads) und Bilder sind keine Programm-Abfragen und bleiben erlaubt
+    // (Node-fetch erzwingt Sec-Fetch-Mode: cors – daher hier http.get mit genau den Headern eines Browsers)
+    const statusOf = (headers) => new Promise((resolve, reject) => require('http').get(`${base}/meta`, { headers }, (res) => (res.resume(), resolve(res.statusCode))).on('error', reject));
+    for (const mode of ['navigate', 'no-cors']) assert.notEqual(await statusOf({ 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': mode }), 409, mode);
+    assert.equal(await statusOf({ 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors' }), 409);
     // aktuelle Kennung: weiter zur Anmeldeprüfung
     assert.notEqual((await fetch(`${base}/meta`, { headers: { 'Sec-Fetch-Site': 'same-origin', 'X-UI-Boot': boot } })).status, 409);
     assert.notEqual((await fetch(`${base}/meta`)).status, 409, 'Skripte/Tests ohne Browser-Header sind nicht betroffen');

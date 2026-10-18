@@ -24,5 +24,25 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm test
-      - run: node src/server.js --selftest
+      - name: Unit- und Integrationstests
+        run: npm test
+      - name: Selbsttest (SQLCipher, serialport, Simulator)
+        run: node src/server.js --selftest
+      # .npmrc: ignore-scripts – Electron lädt sein Programm daher nicht von selbst
+      - name: Electron laden
+        run: node node_modules/electron/install.js
+      - name: Linux – Sandbox für Electron erlauben
+        if: runner.os == 'Linux'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Desktop-Programm mit Simulator (Playwright)
+        shell: bash
+        run: if [ "$RUNNER_OS" = Linux ]; then xvfb-run -a npx playwright test; else npx playwright test; fi
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-${{ matrix.os }}
+          path: |
+            dist/e2e-results/
+            dist/e2e-report/
+            dist/e2e-screenshots/
+          retention-days: 7

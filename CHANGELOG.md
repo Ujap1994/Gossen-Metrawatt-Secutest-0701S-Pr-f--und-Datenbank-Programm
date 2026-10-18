@@ -4,6 +4,29 @@ Alle Änderungen am Secutest Prüfmanager, die neueste oben. Der jeweils oberste
 
 > ⚠ Open-Source-Software ohne Gewähr. Prüfungen nur durch Elektrofachkräfte. Siehe [Haftungsausschluss](README.md#haftungsausschluss).
 
+## 2.0.0 – Desktop-Programm statt Browser
+
+Der Prüfmanager ist jetzt ein **eigenständiges Desktop-Programm** (Electron) für Windows, macOS und Linux – kein Browser-Tab und kein Hintergrundprozess mehr. Datenbanken und Einstellungen der bisherigen Version werden unverändert weiterverwendet.
+
+<img src="docs/images/90-desktop-programm-automatik.png" alt="Desktop-Programm: automatische Messung R_ISO" width="760">
+
+### Neu
+* **Eigenes Programmfenster** mit Menü, Programm-Icon und gemerkter Fenstergröße. Es läuft immer nur ein Fenster; ein zweiter Start holt es nach vorn.
+* **Fenster schließen beendet das Programm** sauber: Datenbank gesperrt, SECUTEST getrennt. Bei einer nicht gespeicherten Prüfung fragt das Programm vorher nach.
+* **Prüfprotokoll und Prüfplaketten** öffnen sich in eigenen Programmfenstern; Drucken bzw. „Als PDF sichern“ über den Druckdialog. Externe Links öffnen im Standardbrowser.
+* **Installer und Pakete für alle Systeme:** Windows-Installer und portable Version (x64, ARM64), macOS-.dmg (Universal, Apple Silicon, Intel), Linux als AppImage, deb, rpm, pacman (Arch), tar.gz (x64, ARM64) sowie Snap und Flatpak.
+* **Protokolldateien** zur Fehlersuche über *Hilfe → Protokolldateien öffnen*.
+
+<img src="docs/images/91-desktop-programm-pruefprotokoll.png" alt="Prüfprotokoll im eigenen Programmfenster" width="560">
+
+### Behoben
+* Prüfprotokoll, Plaketten, Anhänge und Kalender-Download wurden durch den Schutz gegen veraltete Browser-Tabs (1.3.1) fälschlich abgewiesen.
+
+### Hinweise
+* Alpine Linux und andere musl-Systeme werden nicht mehr unterstützt (Electron gibt es nur für glibc).
+* Ohne Fenster im Browser läuft das Programm weiterhin über `npm start` (Entwicklung).
+* Jedes Release wird gepackt getestet: Selbsttest und ein kompletter Prüfdurchlauf in der Oberfläche (Simulator) auf Windows, macOS und Linux, Installation in sieben Linux-Distributionen.
+
 ## 1.3.1 – Schnittstelle am echten SECUTEST korrigiert
 
 Am echten SECUTEST S (Firmware GTM5015000R0001, USB-RS232-Adapter FTDI) getestet: Anschlusskontrolle, R_ISO, Ersatz-Ableitstrom über die Sonde, Funktionstest und Protokollabruf, PC-gesteuert und gerätegeführt.
